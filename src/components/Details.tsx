@@ -10,11 +10,13 @@ import {
   formatDistance,
   formatDuration,
   type PointTable,
+  type LastEdit,
   type TrackSummary,
   type WaypointRow,
 } from "../api";
 import { TrackTree } from "./TrackTree";
-import type { PointSelection } from "../pointEditing";
+import { CleanupPanel } from "./CleanupPanel";
+import { EMPTY_SELECTION, type PointSelection } from "../pointEditing";
 
 interface Props {
   track: TrackSummary;
@@ -38,18 +40,26 @@ interface Props {
   onPanTo: (lonLat: [number, number]) => void;
   onEdited: () => void;
   onError: (message: string) => void;
+  /** Newest point edit of the track's file, if any. */
+  lastEdit: LastEdit | null;
+  /** The track the newest edit changed, when it is not this one. */
+  lastEditTrack: TrackSummary | null;
+  onUndo: () => void;
 }
 
-export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, ...edit }: Props) {
+export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, lastEdit, lastEditTrack, onUndo, ...edit }: Props) {
   const [title, setTitle] = useState(track.title ?? "");
   const [description, setDescription] = useState(track.description ?? "");
   const [tagInput, setTagInput] = useState("");
+  const [cleaningUp, setCleaningUp] = useState(false);
 
   useEffect(() => {
     setTitle(track.title ?? "");
     setDescription(track.description ?? "");
     setTagInput("");
   }, [track.id, track.title, track.description]);
+
+  useEffect(() => setCleaningUp(false), [track.id]);
 
   const save = () => {
     if (title !== (track.title ?? "") || description !== (track.description ?? "")) onSaveMeta(title, description);
@@ -79,6 +89,31 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
             Show file
           </button>
         </div>
+        {cleaningUp ? (
+          <CleanupPanel
+            trackId={track.id}
+            table={edit.table}
+            locked={edit.locked}
+            onSelectionChange={edit.onSelectionChange}
+            onZoomTo={edit.onZoomTo}
+            onBeginEdit={edit.onBeginEdit}
+            onEdited={edit.onEdited}
+            onError={edit.onError}
+            onClose={() => {
+              setCleaningUp(false);
+              edit.onSelectionChange(EMPTY_SELECTION);
+            }}
+          />
+        ) : (
+          <div className="track-actions">
+            <button
+              onClick={() => setCleaningUp(true)}
+              title="Remove the scatter where the logger lay still, e.g. left on indoors"
+            >
+              Clean up track…
+            </button>
+          </div>
+        )}
         <label>
           Title
           <input value={title} placeholder={fallbackName} onChange={(e) => setTitle(e.target.value)} onBlur={save} />
@@ -165,9 +200,23 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
             {track.missing && <strong className="missing"> missing</strong>}
           </dd>
         </dl>
-        {track.edited && (
+        {(track.edited || lastEdit) && (
           <div className="edited-note">
             Points edited in the catalog; the file is unchanged.{" "}
+            {lastEdit && (
+              <>
+                <button
+                  className="link"
+                  disabled={edit.locked}
+                  onClick={onUndo}
+                  title={`Undo the newest point edit of this file (⌘Z), from ${formatDate(lastEdit.createdAt)}`}
+                >
+                  Undo {lastEdit.label.charAt(0).toLowerCase() + lastEdit.label.slice(1)}
+                  {lastEditTrack && ` in “${displayName(lastEditTrack)}”`}
+                </button>
+                {" · "}
+              </>
+            )}
             <button
               className="link"
               onClick={() =>

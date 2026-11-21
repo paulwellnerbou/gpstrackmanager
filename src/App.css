@@ -853,3 +853,63 @@ main {
   color: var(--accent);
   cursor: default;
 }
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.track-actions {
+  display: flex;
+  gap: 6px;
+}
+.cleanup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
+.cleanup-title {
+  font-weight: 600;
+}
+.cleanup p {
+  margin: 0;
+  font-size: 12px;
+}
+.cleanup-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.with-unit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 13px;
+}
+.details .with-unit input {
+  background: var(--panel);
+}
+.cleanup-stays {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.cleanup-stays li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cleanup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}

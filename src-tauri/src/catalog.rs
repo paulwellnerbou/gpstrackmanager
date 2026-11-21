@@ -93,6 +93,24 @@ CREATE TABLE IF NOT EXISTS track_tags(
   tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
   PRIMARY KEY(track_id, tag_id)
 );
+CREATE TABLE IF NOT EXISTS edit_undo(  -- point edits that can be undone, newest last per file
+  id INTEGER PRIMARY KEY,
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  created_track_id INTEGER       -- split-off part the edit created; removed on undo
+);
+CREATE INDEX IF NOT EXISTS edit_undo_file ON edit_undo(file_id);
+CREATE TABLE IF NOT EXISTS edit_undo_tracks( -- tracks as they were before the edit
+  undo_id INTEGER NOT NULL REFERENCES edit_undo(id) ON DELETE CASCADE,
+  track_id INTEGER NOT NULL,
+  start_time INTEGER, end_time INTEGER, point_count INTEGER NOT NULL, distance_m REAL NOT NULL,
+  min_lat REAL, min_lon REAL, max_lat REAL, max_lon REAL, min_ele REAL, max_ele REAL,
+  edited INTEGER NOT NULL,
+  coords BLOB NOT NULL, ele BLOB NOT NULL, time BLOB NOT NULL, importance BLOB NOT NULL,
+  segs BLOB NOT NULL, overview BLOB NOT NULL, file_segs BLOB,
+  PRIMARY KEY(undo_id, track_id)
+);
 "#;
 
 /// Runs after `migrate`, which adds the columns these refer to in older catalogs.
@@ -336,6 +354,8 @@ pub fn write_import_in(tx: &Transaction, root_id: i64, imp: &FileImport) -> Resu
         |r| r.get(0),
     )?;
     write_waypoints(tx, file_id, &file.waypoints)?;
+    // Saved geometry would not match the re-read tracks.
+    crate::undo::clear_file(tx, file_id)?;
 
     let existing: Vec<ExistingTrack> = {
         let mut st = tx.prepare("SELECT id, idx, name, start_time, edited FROM tracks WHERE file_id = ?1 AND idx >= 0")?;
