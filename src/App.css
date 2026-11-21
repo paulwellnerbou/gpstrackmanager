@@ -311,7 +311,7 @@ main {
   background: var(--panel);
   gap: 12px;
 }
-.toolbar strong {
+.toolbar > strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -322,6 +322,11 @@ main {
   gap: 6px;
   align-items: center;
 }
+/* Not on .toggles itself: the dropdown panels inside would inherit it and stop wrapping. */
+.toolbar label,
+.toolbar .marker-menu > button {
+  white-space: nowrap;
+}
 .toolbar .toggles {
   display: flex;
   flex-wrap: wrap;
@@ -330,14 +335,16 @@ main {
   /* The title ellipsizes first; the toggles wrap only once they alone overflow. */
   flex-shrink: 0;
   max-width: 100%;
-  white-space: nowrap;
 }
 .toolbar input {
   width: auto;
 }
 .error {
   position: absolute;
-  top: 44px;
+  /* Anchored to the map row so a toolbar wrapped onto two lines stays uncovered. */
+  grid-row: 2;
+  grid-column: 1;
+  top: 4px;
   left: 12px;
   right: 12px;
   z-index: 10;
