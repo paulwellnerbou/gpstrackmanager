@@ -82,6 +82,15 @@ export interface PointTable {
   bearing: Float64Array;
 }
 
+/** Where the logger lay still; `start` and `end` (inclusive) keep arrival and departure. */
+export interface Stay {
+  start: number;
+  end: number;
+  lat: number;
+  lon: number;
+  ele: number | null;
+}
+
 export interface ScanProgress {
   rootId: number;
   phase: "listing" | "importing" | "done";
@@ -147,6 +156,11 @@ export const api = {
     invoke<{ copied: string[]; skipped: number; failed: string[] }>("import_device_files", { rootId, files }),
 
   deleteTrackPoints: (id: number, indices: number[]) => invoke<void>("delete_track_points", { id, indices }),
+  findTrackStays: (id: number, radiusM: number, minDurationS: number) =>
+    invoke<Stay[]>("find_track_stays", { id, radiusM, minDurationS }),
+  /** Returns the number of points removed. */
+  cleanUpTrack: (id: number, radiusM: number, minDurationS: number) =>
+    invoke<number>("clean_up_track", { id, radiusM, minDurationS }),
   splitTrack: (id: number, at: number) => invoke<number>("split_track", { id, at }),
   revertFile: (fileId: number) => invoke<void>("revert_file", { fileId }),
   extractTrackRange: (id: number, start: number, end: number) =>

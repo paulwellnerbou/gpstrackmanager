@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod catalog;
+pub mod cleanup;
 pub mod codec;
 pub mod device;
 pub mod edit;
@@ -103,6 +104,21 @@ fn get_track_point_table(state: State<AppState>, id: i64) -> CmdResult<Response>
 #[tauri::command]
 fn delete_track_points(state: State<AppState>, id: i64, indices: Vec<u32>) -> CmdResult<()> {
     edit::delete_points(&mut state.db.lock().unwrap(), id, &indices).map_err(err)
+}
+
+/// Preview for `clean_up_track`.
+#[tauri::command]
+fn find_track_stays(state: State<AppState>, id: i64, radius_m: f64, min_duration_s: f64) -> CmdResult<Vec<cleanup::Stay>> {
+    let data = catalog::load_track_data(&state.db.lock().unwrap(), id).map_err(err)?;
+    let o = cleanup::StayOptions { radius_m, min_duration_s };
+    Ok(cleanup::find_stays(&data.coords, &data.ele, &data.time, &data.file_seg_starts, o))
+}
+
+/// Returns the number of points removed.
+#[tauri::command]
+fn clean_up_track(state: State<AppState>, id: i64, radius_m: f64, min_duration_s: f64) -> CmdResult<usize> {
+    let o = cleanup::StayOptions { radius_m, min_duration_s };
+    edit::clean_up_stays(&mut state.db.lock().unwrap(), id, o).map_err(err)
 }
 
 #[tauri::command]
@@ -252,6 +268,8 @@ pub fn run() {
             get_track_profile,
             get_track_point_table,
             delete_track_points,
+            find_track_stays,
+            clean_up_track,
             split_track,
             revert_file,
             extract_track_range,
