@@ -84,33 +84,39 @@ textarea {
   grid-template-columns: var(--sidebar-w, 300px) minmax(0, 1fr) var(--details-w, 340px);
 }
 
-/* Out of grid flow (absolute), centred on the border between pane and map. */
+/* Out of grid flow (absolute). The hit area lies over the map, not the pane, so the
+   pane's scrollbar stays grabbable. */
 .pane-resizer {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 7px;
+  width: 6px;
   z-index: 20;
   cursor: col-resize;
   touch-action: none;
   outline: none;
 }
 .pane-resizer.left {
-  left: calc(var(--sidebar-w, 300px) - 4px);
+  left: calc(var(--sidebar-w, 300px) - 1px);
 }
 .pane-resizer.right {
-  right: calc(var(--details-w, 340px) - 4px);
+  right: calc(var(--details-w, 340px) - 1px);
 }
 .pane-resizer::after {
   content: "";
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 2px;
   width: 3px;
   background: var(--accent);
   opacity: 0;
   transition: opacity 0.12s;
+}
+.pane-resizer.left::after {
+  left: 0;
+}
+.pane-resizer.right::after {
+  right: 0;
 }
 .pane-resizer:hover::after,
 .pane-resizer:focus-visible::after,

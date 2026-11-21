@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type CSSProperties } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   activityOf,
@@ -49,8 +49,8 @@ export default function App() {
   // Bumped after point edits so map, profile and point list reload the track's data.
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [sidebarWidth, setSidebarWidth] = usePaneWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_DEFAULT);
-  const [detailsWidth, setDetailsWidth] = usePaneWidth(DETAILS_WIDTH_KEY, DETAILS_DEFAULT);
+  const [sidebarWidth, setSidebarWidth] = usePaneWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_DEFAULT, SIDEBAR_MIN);
+  const [detailsWidth, setDetailsWidth] = usePaneWidth(DETAILS_WIDTH_KEY, DETAILS_DEFAULT, DETAILS_MIN);
 
   const reloadCatalog = useCallback(async () => {
     try {
@@ -162,13 +162,31 @@ export default function App() {
     }
   };
 
+  // Stored widths are preferences; what is shown is limited so the map keeps MAP_MIN when
+  // the window is small or the details pane opens, and the details pane gives way last.
+  const hasDetails = selected != null;
+  const windowWidth = useWindowWidth(sidebarWidth + (hasDetails ? detailsWidth : 0) + MAP_MIN);
+  const room = windowWidth - MAP_MIN;
+  const shownDetails = hasDetails ? clampWidth(detailsWidth, DETAILS_MIN, room - SIDEBAR_MIN) : 0;
+  const shownSidebar = clampWidth(sidebarWidth, SIDEBAR_MIN, room - shownDetails);
+  // Resizing one pane also keeps the other as shown, so a pane squeezed earlier does not
+  // spring back to its old preference when the user makes room for the map.
+  const resizeSidebar = (w: number) => {
+    setSidebarWidth(w);
+    if (hasDetails) setDetailsWidth(shownDetails);
+  };
+  const resizeDetails = (w: number) => {
+    setDetailsWidth(w);
+    setSidebarWidth(shownSidebar);
+  };
+
   const patchTrack = (id: number, patch: Partial<TrackSummary>) =>
     setTracks((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
 
   return (
     <div
       className={`app ${selected ? "with-details" : ""}`}
-      style={{ "--sidebar-w": `${sidebarWidth}px`, "--details-w": `${detailsWidth}px` } as CSSProperties}
+      style={{ "--sidebar-w": `${shownSidebar}px`, "--details-w": `${shownDetails}px` } as CSSProperties}
     >
       <Sidebar
         roots={roots}
@@ -185,12 +203,13 @@ export default function App() {
       />
       <PaneResizer
         side="left"
+        label="Resize library pane"
         cssVar="--sidebar-w"
-        width={sidebarWidth}
+        width={shownSidebar}
         defaultWidth={SIDEBAR_DEFAULT}
-        min={PANE_MIN}
-        max={() => window.innerWidth - (selected ? detailsWidth : 0) - MAP_MIN}
-        onChange={setSidebarWidth}
+        min={SIDEBAR_MIN}
+        max={() => window.innerWidth - MAP_MIN - shownDetails}
+        onChange={resizeSidebar}
       />
       <main>
         <div className="toolbar">
@@ -249,12 +268,13 @@ export default function App() {
       {selected && (
         <PaneResizer
           side="right"
+          label="Resize details pane"
           cssVar="--details-w"
-          width={detailsWidth}
+          width={shownDetails}
           defaultWidth={DETAILS_DEFAULT}
-          min={PANE_MIN}
-          max={() => window.innerWidth - sidebarWidth - MAP_MIN}
-          onChange={setDetailsWidth}
+          min={DETAILS_MIN}
+          max={() => window.innerWidth - MAP_MIN - shownSidebar}
+          onChange={resizeDetails}
         />
       )}
       {selected && (
@@ -310,14 +330,37 @@ const SIDEBAR_WIDTH_KEY = "sidebarWidth";
 const DETAILS_WIDTH_KEY = "detailsWidth";
 const SIDEBAR_DEFAULT = 300;
 const DETAILS_DEFAULT = 340;
-const PANE_MIN = 200;
+const SIDEBAR_MIN = 200;
+// The point table's fixed columns plus a full "lat, lon" pair need about this much.
+const DETAILS_MIN = 310;
 const MAP_MIN = 320;
 
-function usePaneWidth(key: string, fallback: number) {
+const clampWidth = (w: number, min: number, max: number) => Math.max(min, Math.min(max, w));
+
+/**
+ * The window width, capped at `cap`: resizes above the cap change nothing visible, so they
+ * skip re-rendering the app.
+ */
+function useWindowWidth(cap: number) {
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const width = Math.min(window.innerWidth, cap);
+  const shown = useRef(width);
+  shown.current = width;
+  useEffect(() => {
+    const onResize = () => {
+      if (Math.min(window.innerWidth, cap) !== shown.current) rerender();
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [cap]);
+  return width;
+}
+
+function usePaneWidth(key: string, fallback: number, min: number) {
   const [width, setWidth] = useState(() => {
     try {
       const n = Number(localStorage.getItem(key));
-      if (Number.isFinite(n) && n >= PANE_MIN) return n;
+      if (Number.isFinite(n) && n >= min) return n;
     } catch {
       // Fall through to the default.
     }
