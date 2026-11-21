@@ -3,6 +3,9 @@ import {
   ACTIVITIES,
   api,
   displayName,
+  endPlace,
+  placeLabel,
+  startPlace,
   formatDate,
   formatDistance,
   formatDuration,
@@ -29,6 +32,8 @@ interface Props {
   selection: PointSelection;
   onSelectionChange: (s: PointSelection) => void;
   reveal: { index: number; seq: number } | null;
+  locked: boolean;
+  onBeginEdit: () => void;
   onZoomTo: (bbox: [number, number, number, number]) => void;
   onPanTo: (lonLat: [number, number]) => void;
   onEdited: () => void;
@@ -146,6 +151,11 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
               ? `${Math.round(track.minEle)} – ${Math.round(track.maxEle)} m`
               : "—"}
           </dd>
+          <dt title="Place names: GeoNames (CC BY 4.0), looked up offline">From</dt>
+          <dd>{startPlace(track) ? placeLabel(startPlace(track)!) : "—"}</dd>
+          <dt title="Place names: GeoNames (CC BY 4.0), looked up offline">To</dt>
+          <dd>{endPlace(track) ? placeLabel(endPlace(track)!) : "—"}</dd>
+          <ViaPlaces key={track.id} names={track.places.filter((p) => p.role === "via").map((p) => p.name)} />
           <dt>File</dt>
           <dd className="path" title={track.filePath}>
             {track.filePath}
@@ -162,8 +172,12 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
               className="link"
               onClick={() =>
                 call(async () => {
-                  await api.revertFile(track.fileId);
-                  edit.onEdited();
+                  edit.onBeginEdit();
+                  try {
+                    await api.revertFile(track.fileId);
+                  } finally {
+                    edit.onEdited();
+                  }
                 })
               }
               title="Discard all point edits and split-off parts of this file"
@@ -175,6 +189,30 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
       </div>
       <TrackTree track={track} {...edit} />
     </aside>
+  );
+}
+
+const VIA_SHOWN = 8;
+
+function ViaPlaces({ names }: { names: string[] }) {
+  const [all, setAll] = useState(false);
+  if (!names.length) return null;
+  const shown = all ? names : names.slice(0, VIA_SHOWN);
+  return (
+    <>
+      <dt>Via</dt>
+      <dd>
+        {shown.join(", ")}
+        {names.length > VIA_SHOWN && (
+          <>
+            {" "}
+            <button className="link" onClick={() => setAll(!all)}>
+              {all ? "fewer" : `+${names.length - VIA_SHOWN} more`}
+            </button>
+          </>
+        )}
+      </dd>
+    </>
   );
 }
 

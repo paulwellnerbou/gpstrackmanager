@@ -75,7 +75,10 @@ impl Waypoint {
     /// Converters write FIT laps as waypoints named `LAP001`, …
     pub fn kind_for_name(name: Option<&str>) -> &'static str {
         match name {
-            Some(n) if n.len() > 3 && n[..3].eq_ignore_ascii_case("lap") && n[3..].trim().parse::<u32>().is_ok() => {
+            Some(n)
+                if n.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("lap"))
+                    && n[3..].trim().parse::<u32>().is_ok() =>
+            {
                 "lap"
             }
             _ => "waypoint",

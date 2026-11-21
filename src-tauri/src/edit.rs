@@ -69,10 +69,9 @@ pub fn point_table(data: &TrackData) -> Vec<f64> {
             bearing,
         ]);
     }
-    for &s in &data.file_seg_starts {
-        if let Some(row) = out.get_mut(s as usize * POINT_COLUMNS..) {
-            row[4] = 1.0;
-        }
+    // Catalogs written before file segments were normalised may list a start at `n`.
+    for &s in data.file_seg_starts.iter().filter(|&&s| (s as usize) < n) {
+        out[s as usize * POINT_COLUMNS + 4] = 1.0;
     }
     out
 }
@@ -126,6 +125,7 @@ fn write_geometry(tx: &Transaction, track_id: i64, t: &ProcessedTrack) -> Result
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview, b.file_segs],
     )?;
+    catalog::write_places(tx, track_id, &t.places)?;
     Ok(())
 }
 
@@ -143,7 +143,7 @@ pub fn delete_points(conn: &mut Connection, track_id: i64, indices: &[u32]) -> R
         bail!("A track needs at least two points.");
     }
     let processed = process(subset(&data, &keep));
-    let tx = conn.transaction()?;
+    let tx = catalog::write_tx(conn)?;
     write_geometry(&tx, track_id, &processed)?;
     tx.commit()?;
     Ok(())
@@ -171,23 +171,29 @@ pub fn extract(conn: &mut Connection, track_id: i64, start: u32, end: u32) -> Re
     let first = process(subset(&data, &rest));
     let second = process(subset(&data, &(start..end).collect::<Vec<_>>()));
 
-    let tx = conn.transaction()?;
+    let tx = catalog::write_tx(conn)?;
     let (file_id, path, base): (i64, String, Option<String>) = tx.query_row(
         "SELECT t.file_id, f.path, COALESCE(t.title, t.name) FROM tracks t JOIN files f ON f.id = t.file_id
          WHERE t.id = ?1",
         [track_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    let base = base.unwrap_or_else(|| {
-        Path::new(&path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or(path.clone())
-    });
+    // An untitled part is named by its own route; the file name is the last resort.
+    let title = match base {
+        Some(base) => Some(format!("{base} (part 2)")),
+        None if !second.places.is_empty() => None,
+        None => {
+            let file = Path::new(&path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or(path.clone());
+            Some(format!("{file} (part 2)"))
+        }
+    };
     tx.execute(
         "INSERT INTO tracks(file_id, idx, name, file_description, title, description, file_activity, activity,
            point_count, distance_m, edited)
          SELECT file_id, (SELECT MIN(0, MIN(idx)) FROM tracks WHERE file_id = ?2) - 1,
                 name, file_description, ?3, description, file_activity, activity, 0, 0, 1
          FROM tracks WHERE id = ?1",
-        params![track_id, file_id, format!("{base} (part 2)")],
+        params![track_id, file_id, title],
     )?;
     let new_id = tx.last_insert_rowid();
     tx.execute(
@@ -208,7 +214,7 @@ pub fn join_segment(conn: &mut Connection, track_id: i64, at: u32) -> Result<()>
     }
     data.file_seg_starts.retain(|&s| s != at);
     let processed = process(subset(&data, &(0..data.coords.len()).collect::<Vec<_>>()));
-    let tx = conn.transaction()?;
+    let tx = catalog::write_tx(conn)?;
     write_geometry(&tx, track_id, &processed)?;
     tx.commit()?;
     Ok(())
@@ -224,11 +230,12 @@ pub fn revert_file(conn: &mut Connection, file_id: i64) -> Result<()> {
     if let Err(e) = &imported.result {
         bail!("cannot read {path}: {e}");
     }
-    let tx = conn.transaction()?;
+    let tx = catalog::write_tx(conn)?;
     tx.execute("DELETE FROM tracks WHERE file_id = ?1 AND idx < 0", [file_id])?;
     tx.execute("UPDATE tracks SET edited = 0 WHERE file_id = ?1", [file_id])?;
+    catalog::write_import_in(&tx, root_id, &imported)?;
     tx.commit()?;
-    catalog::write_import(conn, root_id, &imported)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -334,6 +341,14 @@ mod tests {
         join_segment(&mut conn, id, 3).unwrap();
         assert_eq!(catalog::load_track_data(&conn, id).unwrap().file_seg_starts, vec![0]);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn point_table_ignores_segment_start_at_end() {
+        // Catalogs written before file segments were normalised.
+        let mut d = data(2, vec![0]);
+        d.file_seg_starts = vec![0, 2];
+        assert_eq!(point_table(&d).len(), 2 * POINT_COLUMNS);
     }
 
     #[test]

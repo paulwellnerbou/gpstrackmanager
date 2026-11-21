@@ -6,7 +6,8 @@ import type { Feature, GeoJSON as GeoJSONData } from "geojson";
 import { api, type Line, type MapFocus, type PointTable, type TrackSummary, type WaypointRow } from "../api";
 import { TrackMarkers, type MarkerOptions } from "./trackMarkers";
 import { useColorScheme } from "../useColorScheme";
-import { clickSelection, type PointSelection } from "../pointEditing";
+import { clickSelection, isToggleKey, type PointSelection } from "../pointEditing";
+import { GeoSearch } from "./GeoSearch";
 import { installBoxSelect, pointAt, pointsInRect, updateDots, type PointView } from "./mapPoints";
 
 // MapLibre locates its worker relative to its own module URL, which Vite's dependency
@@ -59,6 +60,8 @@ interface Props {
   onPointSelection: (s: PointSelection) => void;
   /** Right-click on the map with points selected; client coordinates. */
   onPointMenu: (x: number, y: number) => void;
+  /** An edit is being applied: no point selection on the map meanwhile. */
+  locked: boolean;
 }
 
 function multiLine(lines: Line[], id?: number): Feature {
@@ -114,6 +117,28 @@ function addOwnLayers(map: MapLibreMap) {
   });
 }
 
+const styleCache = new Map<string, Promise<StyleSpecification>>();
+
+function fetchStyle(url: string): Promise<StyleSpecification> {
+  let p = styleCache.get(url);
+  if (!p) {
+    p = fetch(url).then((r) => {
+      if (!r.ok) throw new Error(`${r.status}`);
+      return r.json() as Promise<StyleSpecification>;
+    });
+    // A failed fetch is retried next time, e.g. once the network is back.
+    p.catch(() => styleCache.delete(url));
+    styleCache.set(url, p);
+  }
+  return p;
+}
+
+/** Paint/layout changes throw while a new style is still being built; wait for it. */
+function whenStyleReady(map: MapLibreMap, fn: () => void) {
+  if (map.isStyleLoaded()) fn();
+  else map.once("idle", fn);
+}
+
 function setData(map: MapLibreMap, id: string, data: GeoJSONData) {
   (map.getSource(id) as GeoJSONSource | undefined)?.setData(data);
 }
@@ -137,6 +162,7 @@ export function MapView({
   selection,
   onPointSelection,
   onPointMenu,
+  locked,
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -146,12 +172,12 @@ export function MapView({
   onSelectRef.current = onSelect;
   const [ready, setReady] = useState(false);
   const scheme = useColorScheme();
-  const baseStyle = showBaseMap ? MAP_STYLES[scheme] : blankStyle(scheme);
+  const [baseMapFailed, setBaseMapFailed] = useState(false);
   const markers = useRef<TrackMarkers | null>(null);
   const [tooManyDots, setTooManyDots] = useState<number | null>(null);
   // Map event handlers are registered once; they read the current props through these.
-  const live = useRef({ table, selection, pointView, onPointSelection, onPointMenu });
-  live.current = { table, selection, pointView, onPointSelection, onPointMenu };
+  const live = useRef({ table, selection, pointView, onPointSelection, onPointMenu, locked });
+  live.current = { table, selection, pointView, onPointSelection, onPointMenu, locked };
   const refreshDots = useRef(() => {
     const map = mapRef.current;
     if (map) setTooManyDots(updateDots(map, live.current.table, live.current.pointView));
@@ -181,7 +207,9 @@ export function MapView({
   useEffect(() => {
     const map = new MapLibreMap({
       container: container.current!,
-      style: baseStyle,
+      // Start with the local style so our layers exist even without network; the base map
+      // is loaded on top once its style could be fetched.
+      style: blankStyle(scheme),
       center: [10, 50],
       zoom: 4,
       attributionControl: { compact: true },
@@ -191,6 +219,8 @@ export function MapView({
       addOwnLayers(map);
       markers.current = new TrackMarkers(map);
       setReady(true);
+      refreshDetail.current();
+      refreshDots.current();
     });
     map.on("moveend", () => {
       refreshDetail.current();
@@ -198,7 +228,7 @@ export function MapView({
     });
     installBoxSelect(
       map,
-      () => live.current.table != null,
+      () => live.current.table != null && !live.current.locked,
       (a, b, additive) => {
         const { table: t, selection: cur } = live.current;
         if (!t) return;
@@ -208,7 +238,8 @@ export function MapView({
         live.current.onPointSelection({ set, anchor: hits[0] ?? cur.anchor });
       },
     );
-    const dotAt = (p: { x: number; y: number }) => (live.current.pointView === "line" ? null : pointAt(map, p));
+    const dotAt = (p: { x: number; y: number }) =>
+      live.current.pointView === "line" || live.current.locked ? null : pointAt(map, p);
     // Thin lines are hard to hit exactly, so pick within a few pixels of the pointer.
     const trackAt = (p: { x: number; y: number }) => {
       const r = 6;
@@ -228,7 +259,7 @@ export function MapView({
       const i = dotAt(e.point);
       if (i != null) {
         const ev = e.originalEvent;
-        const mods = { shift: ev.shiftKey, toggle: ev.metaKey || ev.ctrlKey };
+        const mods = { shift: ev.shiftKey, toggle: isToggleKey(ev) };
         live.current.onPointSelection(clickSelection(live.current.selection, i, mods));
         return;
       }
@@ -255,20 +286,42 @@ export function MapView({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
+    let cancelled = false;
     // transformStyle carries our sources and layers over to the new base style.
-    map.setStyle(baseStyle, {
-      transformStyle: (prev, next) => {
-        if (!prev) return next;
-        const own = prev.layers.filter(
-          (l) => "source" in l && (OWN_SOURCES as readonly string[]).includes(l.source as string),
-        );
-        const sources = { ...next.sources };
-        for (const id of OWN_SOURCES) if (prev.sources[id]) sources[id] = prev.sources[id];
-        return { ...next, sources, layers: [...next.layers, ...own] };
-      },
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showBaseMap, scheme]);
+    const apply = (style: StyleSpecification) =>
+      map.setStyle(style, {
+        transformStyle: (prev, next) => {
+          if (!prev) return next;
+          const own = prev.layers.filter(
+            (l) => "source" in l && (OWN_SOURCES as readonly string[]).includes(l.source as string),
+          );
+          const sources = { ...next.sources };
+          for (const id of OWN_SOURCES) if (prev.sources[id]) sources[id] = prev.sources[id];
+          return { ...next, sources, layers: [...next.layers, ...own] };
+        },
+      });
+    if (!showBaseMap) {
+      apply(blankStyle(scheme));
+      setBaseMapFailed(false);
+      return;
+    }
+    // Fetched here rather than by MapLibre so that, offline, the map keeps working on the
+    // local style instead of ending up with no style at all.
+    fetchStyle(MAP_STYLES[scheme])
+      .then((style) => {
+        if (cancelled) return;
+        apply(style);
+        setBaseMapFailed(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        apply(blankStyle(scheme));
+        setBaseMapFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showBaseMap, scheme, ready]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -285,8 +338,10 @@ export function MapView({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
-    map.setPaintProperty("overview", "line-color", selected ? OVERVIEW_DIMMED : OVERVIEW_COLOR);
-    map.setPaintProperty("overview", "line-opacity", selected ? 0.35 : 0.55);
+    whenStyleReady(map, () => {
+      map.setPaintProperty("overview", "line-color", selected ? OVERVIEW_DIMMED : OVERVIEW_COLOR);
+      map.setPaintProperty("overview", "line-opacity", selected ? 0.35 : 0.55);
+    });
   }, [selected?.id, ready]);
 
   useEffect(() => {
@@ -370,14 +425,18 @@ export function MapView({
     const map = mapRef.current;
     if (!map || !ready) return;
     const line = pointView === "points" ? "none" : "visible";
-    map.setLayoutProperty("detail", "visibility", line);
-    map.setLayoutProperty("detail-casing", "visibility", line);
+    whenStyleReady(map, () => {
+      map.setLayoutProperty("detail", "visibility", line);
+      map.setLayoutProperty("detail-casing", "visibility", line);
+    });
     refreshDots.current();
   }, [table, pointView, ready]);
 
   return (
     <div className="map-wrap">
       <div ref={container} className="map" />
+      <GeoSearch map={ready ? mapRef.current : null} />
+      {baseMapFailed && <div className="map-hint map-hint-bottom">Base map unavailable (offline?)</div>}
       {tooManyDots != null && (
         <div className="map-hint">Zoom in to see points ({tooManyDots.toLocaleString()} in view)</div>
       )}

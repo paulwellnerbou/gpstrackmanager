@@ -21,7 +21,8 @@ pub fn kml(data: &TrackData, name: &str) -> String {
     );
     for (k, &s) in data.seg_starts.iter().enumerate() {
         let e = data.seg_starts.get(k + 1).map(|&e| e as usize).unwrap_or(n);
-        if e <= s as usize {
+        // A single point is no line (invalid KML); it is a glitch the app also leaves out.
+        if e < s as usize + 2 {
             continue;
         }
         out.push_str("<LineString><tessellate>1</tessellate><coordinates>\n");

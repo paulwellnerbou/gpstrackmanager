@@ -1479,6 +1479,7 @@ dependencies = [
  "blake3",
  "chrono",
  "fitparser",
+ "flate2",
  "quick-xml",
  "rayon",
  "rusqlite",

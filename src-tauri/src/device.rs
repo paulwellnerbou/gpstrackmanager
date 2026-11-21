@@ -11,7 +11,7 @@ use walkdir::WalkDir;
 
 use crate::catalog::{self, Root};
 use crate::parse::Format;
-use crate::process::{file_mtime, hash_bytes, process_file};
+use crate::process::{FileImport, file_mtime, hash_bytes, process_file};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,39 +105,80 @@ fn model_description(xml: &str) -> Option<String> {
 pub struct DeviceImportResult {
     pub copied: Vec<String>,
     pub skipped: usize,
+    /// "path: reason" for every file that could not be imported.
+    pub failed: Vec<String>,
 }
 
 /// Copies device files into `<root>/<year>/` and catalogs them. The device is never modified.
+/// One failing file does not stop the others.
 pub fn import_files(conn: &mut Connection, root: &Root, files: &[String]) -> Result<DeviceImportResult> {
     let mut result = DeviceImportResult::default();
     for src in files {
-        let src = Path::new(src);
-        let Some(format) = Format::from_path(src) else { bail!("not a track file: {}", src.display()) };
-        let parsed = process_file(src, format);
-        if catalog::hash_known(conn, &parsed.hash)? {
-            result.skipped += 1;
-            continue;
+        match import_one(conn, root, Path::new(src)) {
+            Ok(Some(dest)) => result.copied.push(dest),
+            Ok(None) => result.skipped += 1,
+            Err(e) => result.failed.push(format!("{src}: {e:#}")),
         }
-        let when = parsed
-            .result
-            .as_ref()
-            .ok()
-            .and_then(|f| f.tracks.first())
-            .and_then(|t| t.stats.start_time)
-            .unwrap_or(parsed.mtime);
-        let year = chrono::DateTime::from_timestamp_millis(when).map(|d| d.year()).unwrap_or(1970);
-        let dest = unique_dest(&Path::new(&root.path).join(year.to_string()), src)?;
-        std::fs::create_dir_all(dest.parent().unwrap())?;
-        std::fs::copy(src, &dest)?;
-        let mut imp = process_file(&dest, format);
-        if imp.hash != parsed.hash {
-            bail!("copy of {} does not match the original", src.display());
-        }
-        imp.result = parsed.result;
-        catalog::write_import(conn, root.id, &imp)?;
-        result.copied.push(dest.to_string_lossy().into_owned());
     }
     Ok(result)
+}
+
+/// Garmin's running track log keeps growing between imports.
+fn is_current_log(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("current.gpx"))
+}
+
+/// Returns the library path of the copy, or `None` if the file was imported before.
+fn import_one(conn: &mut Connection, root: &Root, src: &Path) -> Result<Option<String>> {
+    let Some(format) = Format::from_path(src) else { bail!("not a track file") };
+    let parsed = process_file(src, format);
+    if parsed.hash.is_empty() {
+        // No hash means the file could not be read (e.g. the device was unplugged).
+        bail!("{}", parsed.result.err().unwrap_or_else(|| "cannot read file".into()));
+    }
+    if catalog::hash_known(conn, &parsed.hash)? {
+        return Ok(None);
+    }
+    let first_start = parsed.result.as_ref().ok().and_then(|f| f.tracks.first()).and_then(|t| t.stats.start_time);
+    let when = chrono::DateTime::from_timestamp_millis(first_start.unwrap_or(parsed.mtime));
+    let dir = Path::new(&root.path).join(when.map(|d| d.year()).unwrap_or(1970).to_string());
+    // A grown Current.gpx replaces the earlier copy of the same log (same first day)
+    // instead of piling up Current-1.gpx, Current-2.gpx, … with duplicated tracks.
+    let dest = if is_current_log(src) {
+        let day = when.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "unknown".into());
+        dir.join(format!("Current_{day}.gpx"))
+    } else {
+        unique_dest(&dir, src)?
+    };
+    std::fs::create_dir_all(&dir)?;
+    // Copy under a name the scanner ignores, verify, then rename: a failed or partial copy
+    // never shows up in the library.
+    let tmp = dest.with_file_name(format!(".{}.part", dest.file_name().unwrap().to_string_lossy()));
+    let verified = std::fs::copy(src, &tmp)
+        .map_err(anyhow::Error::from)
+        .and_then(|_| Ok(hash_bytes(&std::fs::read(&tmp)?) == parsed.hash));
+    match verified {
+        Ok(true) => std::fs::rename(&tmp, &dest)?,
+        Ok(false) => {
+            let _ = std::fs::remove_file(&tmp);
+            bail!("the copy does not match the original");
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+    }
+    let meta = std::fs::metadata(&dest)?;
+    let imp = FileImport {
+        path: dest.to_string_lossy().into_owned(),
+        size: meta.len() as i64,
+        mtime: file_mtime(&meta),
+        hash: parsed.hash,
+        format: parsed.format,
+        result: parsed.result,
+    };
+    catalog::write_import(conn, root.id, &imp)?;
+    Ok(Some(imp.path))
 }
 
 fn unique_dest(dir: &Path, src: &Path) -> Result<PathBuf> {
@@ -166,5 +207,31 @@ mod tests {
         assert!(is_track_file(Path::new("Garmin/GPX/Current/Current.gpx")));
         assert!(is_track_file(Path::new("track_001.gpx")));
         assert!(!is_track_file(Path::new("._track_001.gpx")));
+    }
+
+    #[test]
+    fn unreadable_file_fails_and_current_log_is_replaced() {
+        let dir = std::env::temp_dir().join(format!("gtm-dev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (lib, dev) = (dir.join("lib"), dir.join("dev/Garmin/GPX/Current"));
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&dev).unwrap();
+        let mut conn = catalog::open(&dir.join("c.sqlite")).unwrap();
+        let root = catalog::add_root(&conn, lib.to_str().unwrap()).unwrap();
+
+        let missing = dev.join("gone.gpx").to_string_lossy().into_owned();
+        let r = import_files(&mut conn, &root, &[missing]).unwrap();
+        assert_eq!((r.copied.len(), r.skipped, r.failed.len()), (0, 0, 1));
+
+        let pt = |m: u32| format!(r#"<trkpt lat="50.0{m}" lon="8.0"><time>2024-01-01T10:0{m}:00Z</time></trkpt>"#);
+        let current = dev.join("Current.gpx");
+        std::fs::write(&current, format!("<gpx><trk><trkseg>{}{}</trkseg></trk></gpx>", pt(1), pt(2))).unwrap();
+        let first = import_files(&mut conn, &root, &[current.to_string_lossy().into_owned()]).unwrap();
+        std::fs::write(&current, format!("<gpx><trk><trkseg>{}{}{}</trkseg></trk></gpx>", pt(1), pt(2), pt(3))).unwrap();
+        let second = import_files(&mut conn, &root, &[current.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(first.copied, second.copied, "the grown log replaces the earlier copy");
+        assert_eq!(catalog::list_tracks(&conn).unwrap().len(), 1);
+        assert_eq!(std::fs::read_dir(lib.join("2024")).unwrap().count(), 1, "no partial or duplicate files");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
