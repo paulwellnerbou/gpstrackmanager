@@ -29,6 +29,16 @@ export interface TrackSummary {
   /** User choice; null means "as in the file". */
   activity: string | null;
   fileActivity: string | null;
+  /** Start, places passed through, end. */
+  places: TrackPlace[];
+}
+
+/** From GeoNames (CC BY 4.0), looked up offline. */
+export interface TrackPlace {
+  role: "start" | "via" | "end";
+  name: string;
+  region: string | null;
+  country: string | null;
 }
 
 export const ACTIVITIES: { key: string; label: string; icon: string }[] = [
@@ -146,18 +156,30 @@ export function toLines(v: Float64Array, start = 0, end = v.length): Line[] {
   return lines;
 }
 
+// Commands run in parallel in the backend; metadata saves must still land in the order
+// they were made, or an older save could overwrite a newer one.
+let metaQueue: Promise<unknown> = Promise.resolve();
+function inOrder<T>(f: () => Promise<T>): Promise<T> {
+  const p = metaQueue.then(f, f);
+  metaQueue = p.catch(() => undefined);
+  return p;
+}
+
 export const api = {
   listRoots: () => invoke<Root[]>("list_roots"),
   addRoot: (path: string) => invoke<Root>("add_root", { path }),
   removeRoot: (id: number) => invoke<void>("remove_root", { id }),
   scanRoot: (id: number) => invoke<void>("scan_root", { id }),
   listTracks: () => invoke<TrackSummary[]>("list_tracks"),
+  /** Finds places for tracks catalogued without them; resolves to the number of tracks updated. */
+  refreshPlaces: () => invoke<number>("refresh_places"),
   listProblemFiles: () => invoke<FileProblem[]>("list_problem_files"),
   listTags: () => invoke<string[]>("list_tags"),
   updateTrackMeta: (id: number, title: string | null, description: string | null) =>
-    invoke<void>("update_track_meta", { id, title, description }),
-  setTrackTags: (id: number, tags: string[]) => invoke<void>("set_track_tags", { id, tags }),
-  setTrackActivity: (id: number, activity: string | null) => invoke<void>("set_track_activity", { id, activity }),
+    inOrder(() => invoke<void>("update_track_meta", { id, title, description })),
+  setTrackTags: (id: number, tags: string[]) => inOrder(() => invoke<void>("set_track_tags", { id, tags })),
+  setTrackActivity: (id: number, activity: string | null) =>
+    inOrder(() => invoke<void>("set_track_activity", { id, activity })),
   listGpsDevices: () => invoke<GpsDevice[]>("list_gps_devices"),
   importDeviceFiles: (rootId: number, files: string[]) =>
     invoke<{ copied: string[]; skipped: number; failed: string[] }>("import_device_files", { rootId, files }),
@@ -236,9 +258,30 @@ export const api = {
   },
 };
 
+export function startPlace(t: TrackSummary) {
+  return t.places.find((p) => p.role === "start") ?? null;
+}
+
+export function endPlace(t: TrackSummary) {
+  return t.places.find((p) => p.role === "end") ?? null;
+}
+
+/** "Kelkheim → Eppstein", or one name for round trips. */
+export function routeName(t: TrackSummary): string | null {
+  const [a, b] = [startPlace(t)?.name, endPlace(t)?.name];
+  if (a && b && a !== b) return `${a} → ${b}`;
+  return a ?? b ?? null;
+}
+
+export function placeLabel(p: TrackPlace): string {
+  return [p.name, p.region !== p.name ? p.region : null, p.country].filter(Boolean).join(", ");
+}
+
 export function displayName(t: TrackSummary): string {
   if (t.title) return t.title;
   if (t.name) return t.name;
+  const route = routeName(t);
+  if (route) return route;
   const file = t.filePath.split("/").pop() ?? t.filePath;
   return t.trackCountInFile > 1 ? `${file} #${t.idx + 1}` : file;
 }

@@ -6,13 +6,14 @@ use crate::geo::{haversine_m, pixel_size_at_zoom};
 use crate::lod::compute_importance;
 use crate::model::{NO_TIME, ParsedTrack, Waypoint};
 use crate::parse::{self, Format};
+use crate::places::{self, TrackPlace};
 
 /// The library overview is drawn from a pre-thinned copy so showing every track at once
 /// never touches the full point data.
 const OVERVIEW_ZOOM: f64 = 10.0;
 
 /// Bump when parsing or processing changes so the next scan re-reads every file.
-pub const PARSER_VERSION: i64 = 3;
+pub const PARSER_VERSION: i64 = 4;
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct Stats {
@@ -43,6 +44,7 @@ pub struct ProcessedTrack {
     pub activity: Option<String>,
     pub stats: Stats,
     pub blobs: TrackBlobs,
+    pub places: Vec<TrackPlace>,
 }
 
 pub struct ProcessedFile {
@@ -144,6 +146,22 @@ fn split_at_glitches(p: &mut crate::model::Points) {
     p.seg_starts = starts;
 }
 
+/// Earliest and latest time, ignoring fixes more than a year from the median: a single
+/// bogus fix (1970, 2099, a GPS week rollover) would otherwise give the track a wrong date.
+fn time_range(time: &[i64]) -> (Option<i64>, Option<i64>) {
+    const YEAR_MS: i64 = 366 * 86_400_000;
+    let mut ts: Vec<i64> = time.iter().copied().filter(|&t| t != NO_TIME).collect();
+    if ts.is_empty() {
+        return (None, None);
+    }
+    let mid = ts.len() / 2;
+    let median = *ts.select_nth_unstable(mid).1;
+    let ok = ts.iter().copied().filter(|t| t.abs_diff(median) <= YEAR_MS as u64);
+    ok.fold((None, None), |(lo, hi): (Option<i64>, Option<i64>), t| {
+        (Some(lo.map_or(t, |l| l.min(t))), Some(hi.map_or(t, |h| h.max(t))))
+    })
+}
+
 pub fn process_track(mut t: ParsedTrack) -> ProcessedTrack {
     // Normalised: empty segments (e.g. a trailing empty <trkseg>) are dropped.
     let file_segs: Vec<u32> = t.points.segments().iter().map(|&(s, _)| s as u32).collect();
@@ -173,8 +191,7 @@ pub fn process_track(mut t: ParsedTrack) -> ProcessedTrack {
     if bbox[0] <= bbox[2] {
         stats.bbox = Some(bbox);
     }
-    stats.start_time = p.time.iter().copied().find(|&t| t != NO_TIME);
-    stats.end_time = p.time.iter().rev().copied().find(|&t| t != NO_TIME);
+    (stats.start_time, stats.end_time) = time_range(&p.time);
 
     let tol = pixel_size_at_zoom(OVERVIEW_ZOOM) as f32;
     let mut overview = Vec::new();
@@ -192,6 +209,8 @@ pub fn process_track(mut t: ParsedTrack) -> ProcessedTrack {
         }
     }
 
+    // The overview is detailed enough for town-level places and much shorter than the track.
+    let places = places::index().track_places(&codec::decode_coords(&overview));
     let blobs = TrackBlobs {
         coords: codec::encode_coords(&p.lat, &p.lon),
         ele: codec::encode_f32(&p.ele),
@@ -201,7 +220,7 @@ pub fn process_track(mut t: ParsedTrack) -> ProcessedTrack {
         file_segs: codec::encode_u32(&file_segs),
         overview,
     };
-    ProcessedTrack { name: t.name, description: t.description, activity: t.activity, stats, blobs }
+    ProcessedTrack { name: t.name, description: t.description, activity: t.activity, stats, blobs, places }
 }
 
 #[cfg(test)]
@@ -235,5 +254,12 @@ mod tests {
         t.points.start_segment();
         let processed = process_track(t);
         assert_eq!(codec::decode_u32(&processed.blobs.file_segs), vec![0]);
+    }
+
+    #[test]
+    fn one_bogus_fix_does_not_change_the_date() {
+        let day = 1_700_000_000_000;
+        let t = process_track(track(&[(50.0, 8.0, 0), (50.001, 8.0, day), (50.002, 8.0, day + 60_000)], &[]));
+        assert_eq!((t.stats.start_time, t.stats.end_time), (Some(day), Some(day + 60_000)));
     }
 }

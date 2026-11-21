@@ -77,7 +77,8 @@ function indexAtDistance(dist: Float64Array, d: number): number {
 export class TrackMarkers {
   private markers: Marker[] = [];
   private table: PointTable | null = null;
-  private selection: number[] = [];
+  /** Selected points that get a label; computed per selection, not per map move. */
+  private labelPicks: number[] = [];
   private options = DEFAULT_MARKER_OPTIONS;
   private waypoints: WaypointRow[] = [];
   private focusedWaypoint: number | null = null;
@@ -96,7 +97,7 @@ export class TrackMarkers {
     this.waypoints = waypoints;
     this.focusedWaypoint = focusedWaypoint;
     this.table = table;
-    this.selection = selection;
+    this.labelPicks = runEnds(selection);
     this.options = options;
     this.render();
   }
@@ -200,21 +201,13 @@ export class TrackMarkers {
       }
     }
 
-    // Large selections label only where each selected run starts and ends.
-    let picks = this.selection;
-    if (picks.length > MAX_SELECTION_LABELS) {
-      const ends: number[] = [];
-      for (let k = 0; k < picks.length; k++) {
-        const runStart = k === 0 || picks[k - 1] !== picks[k] - 1;
-        const runEnd = k === picks.length - 1 || picks[k + 1] !== picks[k] + 1;
-        if (runStart || runEnd) ends.push(picks[k]);
-      }
-      picks = ends.slice(0, MAX_SELECTION_LABELS);
-    }
-    for (const i of picks) {
+    let labels = 0;
+    for (const i of this.labelPicks) {
+      if (labels >= MAX_SELECTION_LABELS) break;
       if (i >= n || !visible(t.lon[i], t.lat[i])) continue;
       const text = label(t, i, o) || `#${i + 1}`;
       this.add(this.arrow(t.bearing[i], text, "selection"), t.lon[i], t.lat[i]);
+      labels++;
     }
 
     if (o.startEnd) {
@@ -223,4 +216,16 @@ export class TrackMarkers {
       this.add(this.pin("start", `Start${time(0)}`), t.lon[0], t.lat[0]);
     }
   }
+}
+
+/** Large selections are labelled only where each selected run starts and ends. */
+function runEnds(sorted: number[]): number[] {
+  if (sorted.length <= MAX_SELECTION_LABELS) return sorted;
+  const ends: number[] = [];
+  for (let k = 0; k < sorted.length; k++) {
+    const runStart = k === 0 || sorted[k - 1] !== sorted[k] - 1;
+    const runEnd = k === sorted.length - 1 || sorted[k + 1] !== sorted[k] + 1;
+    if (runStart || runEnd) ends.push(sorted[k]);
+  }
+  return ends;
 }

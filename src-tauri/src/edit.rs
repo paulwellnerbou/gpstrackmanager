@@ -127,6 +127,7 @@ fn write_geometry(tx: &Transaction, track_id: i64, t: &ProcessedTrack) -> Result
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview, b.file_segs],
     )?;
+    catalog::write_places(tx, track_id, &t.places)?;
     Ok(())
 }
 
@@ -186,8 +187,8 @@ pub fn clean_up_stays(conn: &mut Connection, track_id: i64, o: StayOptions) -> R
 /// Returns the new track's id.
 pub fn split(conn: &mut Connection, track_id: i64, at: u32) -> Result<i64> {
     let n = catalog::load_track_data(conn, track_id)?.coords.len() as u32;
-    if at == 0 || at >= n {
-        bail!("Cannot split at the first or after the last point.");
+    if at < 2 || at + 2 > n {
+        bail!("Both tracks need at least two points.");
     }
     extract_as(conn, track_id, at, n, "Split track")
 }
@@ -202,8 +203,8 @@ fn extract_as(conn: &mut Connection, track_id: i64, start: u32, end: u32, label:
     let data = catalog::load_track_data(conn, track_id)?;
     let (n, start, end) = (data.coords.len(), start as usize, (end as usize).min(data.coords.len()));
     let rest: Vec<usize> = (0..start).chain(end..n).collect();
-    if rest.is_empty() || end <= start {
-        bail!("Nothing would remain in the original track.");
+    if rest.len() < 2 || end < start + 2 {
+        bail!("Both tracks need at least two points.");
     }
     let first = process(subset(&data, &rest));
     let second = process(subset(&data, &(start..end).collect::<Vec<_>>()));
@@ -215,16 +216,22 @@ fn extract_as(conn: &mut Connection, track_id: i64, start: u32, end: u32, label:
         [track_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    let base = base.unwrap_or_else(|| {
-        Path::new(&path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or(path.clone())
-    });
+    // An untitled part is named by its own route; the file name is the last resort.
+    let title = match base {
+        Some(base) => Some(format!("{base} (part 2)")),
+        None if !second.places.is_empty() => None,
+        None => {
+            let file = Path::new(&path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or(path.clone());
+            Some(format!("{file} (part 2)"))
+        }
+    };
     tx.execute(
         "INSERT INTO tracks(file_id, idx, name, file_description, title, description, file_activity, activity,
            point_count, distance_m, edited)
          SELECT file_id, (SELECT MIN(0, MIN(idx)) FROM tracks WHERE file_id = ?2) - 1,
                 name, file_description, ?3, description, file_activity, activity, 0, 0, 1
          FROM tracks WHERE id = ?1",
-        params![track_id, file_id, format!("{base} (part 2)")],
+        params![track_id, file_id, title],
     )?;
     let new_id = tx.last_insert_rowid();
     tx.execute(
