@@ -38,7 +38,12 @@ export function Profile({ track, version, onCursor }: Props) {
           width,
           height: el.clientHeight - 8,
           legend: { show: false },
-          scales: { x: { time: false } },
+          // Without spread (no distance covered, flat elevation) uPlot falls back to 0–100,
+          // which reads as a 100 km track; keep the axis around the actual value instead.
+          scales: {
+            x: { time: false, range: (_u, min, max) => (max > min ? [min, max] : [min, min + 0.1]) },
+            y: { range: (_u, min, max) => (max > min ? uPlot.rangeNum(min, max, 0.1, true) : [min - 10, max + 10]) },
+          },
           axes: [
             {
               values: (_u, ticks) => ticks.map((v) => `${v} km`),
