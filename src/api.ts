@@ -29,6 +29,16 @@ export interface TrackSummary {
   /** User choice; null means "as in the file". */
   activity: string | null;
   fileActivity: string | null;
+  /** Start, places passed through, end. */
+  places: TrackPlace[];
+}
+
+/** From GeoNames (CC BY 4.0), looked up offline. */
+export interface TrackPlace {
+  role: "start" | "via" | "end";
+  name: string;
+  region: string | null;
+  country: string | null;
 }
 
 export const ACTIVITIES: { key: string; label: string; icon: string }[] = [
@@ -136,6 +146,8 @@ export const api = {
   removeRoot: (id: number) => invoke<void>("remove_root", { id }),
   scanRoot: (id: number) => invoke<void>("scan_root", { id }),
   listTracks: () => invoke<TrackSummary[]>("list_tracks"),
+  /** Finds places for tracks catalogued without them; resolves to the number of tracks updated. */
+  refreshPlaces: () => invoke<number>("refresh_places"),
   listProblemFiles: () => invoke<FileProblem[]>("list_problem_files"),
   listTags: () => invoke<string[]>("list_tags"),
   updateTrackMeta: (id: number, title: string | null, description: string | null) =>
@@ -211,9 +223,30 @@ export const api = {
   },
 };
 
+export function startPlace(t: TrackSummary) {
+  return t.places.find((p) => p.role === "start") ?? null;
+}
+
+export function endPlace(t: TrackSummary) {
+  return t.places.find((p) => p.role === "end") ?? null;
+}
+
+/** "Kelkheim → Eppstein", or one name for round trips. */
+export function routeName(t: TrackSummary): string | null {
+  const [a, b] = [startPlace(t)?.name, endPlace(t)?.name];
+  if (a && b && a !== b) return `${a} → ${b}`;
+  return a ?? b ?? null;
+}
+
+export function placeLabel(p: TrackPlace): string {
+  return [p.name, p.region !== p.name ? p.region : null, p.country].filter(Boolean).join(", ");
+}
+
 export function displayName(t: TrackSummary): string {
   if (t.title) return t.title;
   if (t.name) return t.name;
+  const route = routeName(t);
+  if (route) return route;
   const file = t.filePath.split("/").pop() ?? t.filePath;
   return t.trackCountInFile > 1 ? `${file} #${t.idx + 1}` : file;
 }

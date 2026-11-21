@@ -28,11 +28,15 @@ cd src-tauri && cargo run --release --example scan -- /tmp/catalog.sqlite /path/
   Imports copy into `<library>/<year>/`; the device is never modified.
 - **Editing**: deleting points and splitting tracks change the catalog copy only. The original
   file is untouched, and “Revert to file” discards the edits.
+- **Places**: start, end and the towns a track passes through are looked up offline against
+  GeoNames places with ≥ 1000 inhabitants (`src-tauri/data/places.tsv.gz`, built by
+  `examples/build_places.rs`). Place names are searchable and name tracks without a title.
 - **Glitches**: jumps faster than 300 m/s and recording gaps (> 2 km after > 5 min) start a new
   segment, so they are neither drawn nor counted as distance.
 
 ## Layout
 
 - `src-tauri/src/` — `parse/` (GPX, FIT), `lod.rs`, `process.rs`, `catalog.rs`, `scan.rs`,
-  `device.rs`, `edit.rs`, `export.rs` (KML), `lib.rs` (Tauri commands)
+  `device.rs`, `edit.rs`, `export.rs` (KML), `places.rs` (reverse geocoding), `lib.rs` (Tauri commands)
+- `src-tauri/data/` — embedded place data (GeoNames, CC BY 4.0, https://www.geonames.org)
 - `src/` — `App.tsx`, `components/` (Sidebar, MapView, Profile, Details, PointList)

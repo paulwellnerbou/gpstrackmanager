@@ -125,6 +125,7 @@ fn write_geometry(tx: &Transaction, track_id: i64, t: &ProcessedTrack) -> Result
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview, b.file_segs],
     )?;
+    catalog::write_places(tx, track_id, &t.places)?;
     Ok(())
 }
 
@@ -177,16 +178,22 @@ pub fn extract(conn: &mut Connection, track_id: i64, start: u32, end: u32) -> Re
         [track_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    let base = base.unwrap_or_else(|| {
-        Path::new(&path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or(path.clone())
-    });
+    // An untitled part is named by its own route; the file name is the last resort.
+    let title = match base {
+        Some(base) => Some(format!("{base} (part 2)")),
+        None if !second.places.is_empty() => None,
+        None => {
+            let file = Path::new(&path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or(path.clone());
+            Some(format!("{file} (part 2)"))
+        }
+    };
     tx.execute(
         "INSERT INTO tracks(file_id, idx, name, file_description, title, description, file_activity, activity,
            point_count, distance_m, edited)
          SELECT file_id, (SELECT MIN(0, MIN(idx)) FROM tracks WHERE file_id = ?2) - 1,
                 name, file_description, ?3, description, file_activity, activity, 0, 0, 1
          FROM tracks WHERE id = ?1",
-        params![track_id, file_id, format!("{base} (part 2)")],
+        params![track_id, file_id, title],
     )?;
     let new_id = tx.last_insert_rowid();
     tx.execute(

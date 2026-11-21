@@ -31,6 +31,7 @@ rayon = "1.12.0"
 anyhow = "1.0.104"
 tauri-plugin-dialog = "2.8.4"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+flate2 = "1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
