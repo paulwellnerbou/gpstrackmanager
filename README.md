@@ -40,3 +40,9 @@ cd src-tauri && cargo run --release --example scan -- /tmp/catalog.sqlite /path/
   `device.rs`, `edit.rs`, `export.rs` (KML), `places.rs` (reverse geocoding), `lib.rs` (Tauri commands)
 - `src-tauri/data/` — embedded place data (GeoNames, CC BY 4.0, https://www.geonames.org)
 - `src/` — `App.tsx`, `components/` (Sidebar, MapView, Profile, Details, PointList)
+
+## License
+
+MIT, see [LICENSE](LICENSE). The embedded place data in `src-tauri/data/` is from
+[GeoNames](https://www.geonames.org) and licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); see [NOTICE](NOTICE).

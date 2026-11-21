@@ -244,7 +244,11 @@ export function MapView({
       style: blankStyle(brightness),
       center: [10, 50],
       zoom: 4,
-      attributionControl: { compact: true },
+      attributionControl: {
+        compact: true,
+        // Track place names come from the embedded GeoNames data (CC BY 4.0).
+        customAttribution: '<a href="https://www.geonames.org" target="_blank">Places: GeoNames</a>',
+      },
     });
     mapRef.current = map;
     map.on("load", () => {
