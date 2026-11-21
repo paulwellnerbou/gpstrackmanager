@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod catalog;
+pub mod cleanup;
 pub mod codec;
 pub mod device;
 pub mod edit;
@@ -12,6 +13,7 @@ pub mod parse;
 pub mod places;
 pub mod process;
 pub mod scan;
+pub mod undo;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -167,9 +169,37 @@ async fn get_track_point_table(app: AppHandle, id: i64) -> CmdResult<Response> {
     blocking(app, move |s| Ok(f64_bytes(&edit::point_table(&*s.track(id)?)))).await
 }
 
+/// Frees the cached track once nothing is selected; a large one holds tens of MB.
+#[tauri::command]
+async fn release_track_cache(app: AppHandle) -> CmdResult<()> {
+    blocking(app, |s| {
+        *s.track_cache.lock().unwrap() = None;
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn delete_track_points(app: AppHandle, id: i64, indices: Vec<u32>) -> CmdResult<()> {
     blocking(app, move |s| s.write(|c| edit::delete_points(c, id, &indices))).await
+}
+
+/// Preview for `clean_up_track`.
+#[tauri::command]
+async fn find_track_stays(app: AppHandle, id: i64, radius_m: f64, min_duration_s: f64) -> CmdResult<Vec<cleanup::Stay>> {
+    blocking(app, move |s| {
+        let data = s.track(id)?;
+        let o = cleanup::StayOptions { radius_m, min_duration_s };
+        Ok(cleanup::find_stays(&data.coords, &data.ele, &data.time, &data.file_seg_starts, o))
+    })
+    .await
+}
+
+/// Returns the number of points removed.
+#[tauri::command]
+async fn clean_up_track(app: AppHandle, id: i64, radius_m: f64, min_duration_s: f64) -> CmdResult<usize> {
+    let o = cleanup::StayOptions { radius_m, min_duration_s };
+    blocking(app, move |s| s.write(|c| edit::clean_up_stays(c, id, o))).await
 }
 
 #[tauri::command]
@@ -185,6 +215,16 @@ async fn extract_track_range(app: AppHandle, id: i64, start: u32, end: u32) -> C
 #[tauri::command]
 async fn join_track_segment(app: AppHandle, id: i64, at: u32) -> CmdResult<()> {
     blocking(app, move |s| s.write(|c| edit::join_segment(c, id, at))).await
+}
+
+#[tauri::command]
+async fn last_edit(app: AppHandle, file_id: i64) -> CmdResult<Option<undo::LastEdit>> {
+    blocking(app, move |s| undo::last_edit(&s.conn(), file_id)).await
+}
+
+#[tauri::command]
+async fn undo_edit(app: AppHandle, file_id: i64) -> CmdResult<undo::UndoResult> {
+    blocking(app, move |s| s.write(|c| undo::undo(c, file_id))).await
 }
 
 #[tauri::command]
@@ -355,9 +395,14 @@ pub fn run() {
             get_track_points,
             get_track_profile,
             get_track_point_table,
+            release_track_cache,
             delete_track_points,
+            find_track_stays,
+            clean_up_track,
             split_track,
             revert_file,
+            last_edit,
+            undo_edit,
             extract_track_range,
             join_track_segment,
             list_file_waypoints,

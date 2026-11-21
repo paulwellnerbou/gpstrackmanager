@@ -92,6 +92,22 @@ export interface PointTable {
   bearing: Float64Array;
 }
 
+/** Where the logger lay still; `start` and `end` (inclusive) keep arrival and departure. */
+export interface Stay {
+  start: number;
+  end: number;
+  lat: number;
+  lon: number;
+  ele: number | null;
+}
+
+export interface LastEdit {
+  label: string;
+  createdAt: number;
+  /** The track the edit changed, not necessarily the one shown. */
+  trackId: number;
+}
+
 export interface ScanProgress {
   rootId: number;
   phase: "listing" | "importing" | "done";
@@ -169,8 +185,17 @@ export const api = {
     invoke<{ copied: string[]; skipped: number; failed: string[] }>("import_device_files", { rootId, files }),
 
   deleteTrackPoints: (id: number, indices: number[]) => invoke<void>("delete_track_points", { id, indices }),
+  findTrackStays: (id: number, radiusM: number, minDurationS: number) =>
+    invoke<Stay[]>("find_track_stays", { id, radiusM, minDurationS }),
+  /** Returns the number of points removed. */
+  cleanUpTrack: (id: number, radiusM: number, minDurationS: number) =>
+    invoke<number>("clean_up_track", { id, radiusM, minDurationS }),
   splitTrack: (id: number, at: number) => invoke<number>("split_track", { id, at }),
   revertFile: (fileId: number) => invoke<void>("revert_file", { fileId }),
+  lastEdit: (fileId: number) => invoke<LastEdit | null>("last_edit", { fileId }),
+  /** Undoes the file's newest point edit; `removed` is a split-off part that went away. */
+  undoEdit: (fileId: number) =>
+    invoke<{ restored: number[]; removed: number | null }>("undo_edit", { fileId }),
   extractTrackRange: (id: number, start: number, end: number) =>
     invoke<number>("extract_track_range", { id, start, end }),
   joinTrackSegment: (id: number, at: number) => invoke<void>("join_track_segment", { id, at }),
@@ -179,6 +204,7 @@ export const api = {
   openInMaps: (id: number) => invoke<void>("open_in_maps", { id }),
   revealTrackFile: (id: number) => invoke<void>("reveal_track_file", { id }),
 
+  releaseTrackCache: () => invoke<void>("release_track_cache"),
   async pointTable(id: number): Promise<PointTable> {
     const v = f64(await invoke<ArrayBuffer>("get_track_point_table", { id }));
     const C = 8;

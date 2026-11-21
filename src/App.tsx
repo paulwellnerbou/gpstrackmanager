@@ -5,6 +5,7 @@ import {
   api,
   displayName,
   type FileProblem,
+  type LastEdit,
   type Line,
   type MapFocus,
   type PointTable,
@@ -40,6 +41,7 @@ export default function App() {
   const [table, setTable] = useState<PointTable | null>(null);
   const [fileWaypoints, setFileWaypoints] = useState<{ fileId: number; rows: WaypointRow[] } | null>(null);
   const [focusedWaypoint, setFocusedWaypoint] = useState<number | null>(null);
+  const [lastEdit, setLastEdit] = useState<LastEdit | null>(null);
   const [selection, setSelection] = useState<PointSelection>(EMPTY_SELECTION);
   const [reveal, setReveal] = useState<{ index: number; seq: number } | null>(null);
   const [mapMenu, setMapMenu] = useState<{ x: number; y: number } | null>(null);
@@ -89,6 +91,8 @@ export default function App() {
   const scanEnded = useCallback(
     (error?: string) => {
       scanRunning.current = false;
+      // Also after a failure: files imported before it are in the catalog.
+      reloadCatalog().then(() => setVersion((v) => v + 1));
       if (error) {
         setError(error);
         setScan(null);
@@ -96,7 +100,7 @@ export default function App() {
       const next = scanQueue.current.shift();
       if (next != null) startScan(next);
     },
-    [startScan],
+    [startScan, reloadCatalog],
   );
 
   useEffect(() => {
@@ -109,10 +113,8 @@ export default function App() {
     const unlisten = [
       listen<ScanProgress>("scan-progress", (e) => {
         setScan(e.payload);
-        if (e.payload.phase !== "done") return;
-        // A rescan may have replaced the selected track's points and waypoints.
-        reloadCatalog().then(() => setVersion((v) => v + 1));
-        scanEnded();
+        // A rescan may have replaced the selected track's points and waypoints; scanEnded reloads.
+        if (e.payload.phase === "done") scanEnded();
       }),
       listen<string>("scan-error", (e) => scanEnded(e.payload)),
     ];
@@ -173,6 +175,7 @@ export default function App() {
     if (selectedId == null) {
       tableFor.current = null;
       setEditPending(false);
+      api.releaseTrackCache().catch(() => undefined);
       return;
     }
     api
@@ -210,6 +213,19 @@ export default function App() {
     };
   }, [fileId, version]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setLastEdit(null);
+    if (fileId == null) return;
+    api
+      .lastEdit(fileId)
+      .then((e) => !cancelled && setLastEdit(e))
+      .catch((e) => setError(String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId, version]);
+
   // File order first; parts split off in the catalog (negative idx) after, oldest first.
   const fileTracks = useMemo(
     () =>
@@ -223,6 +239,40 @@ export default function App() {
     await reloadCatalog();
     setVersion((v) => v + 1);
   };
+
+  const lastEditTrack =
+    lastEdit && lastEdit.trackId !== selectedId ? (tracks.find((t) => t.id === lastEdit.trackId) ?? null) : null;
+
+  const undo = async () => {
+    if (fileId == null || !lastEdit || editPending) return;
+    beginEdit();
+    try {
+      const r = await api.undoEdit(fileId);
+      // Show the track that changed: another track of the file, or the one a removed
+      // split-off part came from.
+      if (selectedId != null && r.restored.length && !r.restored.includes(selectedId)) {
+        setSelectedId(r.restored[0]);
+      }
+      await onEdited();
+    } catch (e) {
+      editFailed(String(e));
+    }
+  };
+
+  const undoRef = useRef(undo);
+  undoRef.current = undo;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.key.toLowerCase() !== "z") return;
+      // Text fields keep their own undo.
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName))) return;
+      e.preventDefault();
+      undoRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const changeMarkerOptions = (o: MarkerOptions) => {
     setMarkerOptions(o);
@@ -386,6 +436,9 @@ export default function App() {
           onBeginEdit={beginEdit}
           onEdited={onEdited}
           onError={editFailed}
+          lastEdit={lastEdit}
+          lastEditTrack={lastEditTrack}
+          onUndo={undo}
         />
       )}
     </div>

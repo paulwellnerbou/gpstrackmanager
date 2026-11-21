@@ -30,15 +30,17 @@ interface Props {
 
 /**
  * Rows of one kind (with or without a route line and tags) share a height, so the list can
- * render only what is visible. These are the starting values; a kind grows if its rows need
- * more (larger text).
+ * render only what is visible. Every line is a single line, so the height of a kind does not
+ * depend on the width; these are minimums, raised once per kind if its rows need more
+ * (larger text).
  */
 const ROW_H = 50;
 const ROUTE_H = 17;
 const TAGS_H = 20;
 const OVERSCAN = 8;
 
-type RowKind = "" | "r" | "t" | "rt";
+const ROW_KINDS = ["", "r", "t", "rt"] as const;
+type RowKind = (typeof ROW_KINDS)[number];
 
 /** The route line is shown only when it adds something to the name. */
 function routeLine(t: TrackSummary): string | null {
@@ -74,14 +76,21 @@ export function Sidebar(p: Props) {
     return () => ro.disconnect();
   }, []);
   const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHTS);
+  const measured = useRef(new Set<RowKind>());
   useLayoutEffect(() => {
-    const next = { ...rowHeight };
-    list.current?.querySelectorAll<HTMLElement>(".list-row").forEach((row) => {
-      const kind = (row.dataset.kind ?? "") as RowKind;
+    const el = list.current;
+    if (!el || measured.current.size === ROW_KINDS.length) return;
+    let next: Record<RowKind, number> | null = null;
+    for (const kind of ROW_KINDS) {
+      if (measured.current.has(kind)) continue;
+      const row = el.querySelector<HTMLElement>(`.list-row[data-kind="${kind}"]`);
+      if (!row) continue;
+      measured.current.add(kind);
       // +1 for the bottom border, which scrollHeight leaves out.
-      next[kind] = Math.max(next[kind], row.scrollHeight + 1);
-    });
-    if ((Object.keys(next) as RowKind[]).some((k) => next[k] !== rowHeight[k])) setRowHeight(next);
+      const need = row.scrollHeight + 1;
+      if (need > rowHeight[kind]) next = { ...(next ?? rowHeight), [kind]: need };
+    }
+    if (next) setRowHeight(next);
   });
   const offsets = useMemo(() => {
     const o = new Float64Array(p.tracks.length + 1);
