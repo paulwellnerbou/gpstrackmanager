@@ -76,11 +76,51 @@ textarea {
 
 .app {
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: var(--sidebar-w, 300px) minmax(0, 1fr);
   height: 100vh;
+  position: relative;
 }
 .app.with-details {
-  grid-template-columns: 300px 1fr 340px;
+  grid-template-columns: var(--sidebar-w, 300px) minmax(0, 1fr) var(--details-w, 340px);
+}
+
+/* Out of grid flow (absolute), centred on the border between pane and map. */
+.pane-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  z-index: 20;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.pane-resizer.left {
+  left: calc(var(--sidebar-w, 300px) - 4px);
+}
+.pane-resizer.right {
+  right: calc(var(--details-w, 340px) - 4px);
+}
+.pane-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 3px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.pane-resizer:hover::after,
+.pane-resizer:focus-visible::after,
+.pane-resizer.dragging::after {
+  opacity: 0.6;
+}
+.app:has(.pane-resizer.dragging),
+.app:has(.pane-resizer.dragging) * {
+  cursor: col-resize !important;
+  user-select: none;
 }
 
 .sidebar {

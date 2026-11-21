@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   activityOf,
@@ -21,6 +21,7 @@ import { Sidebar } from "./components/Sidebar";
 import { MapView } from "./components/MapView";
 import { Profile } from "./components/Profile";
 import { Details } from "./components/Details";
+import { PaneResizer } from "./components/PaneResizer";
 import "./App.css";
 
 export default function App() {
@@ -48,6 +49,8 @@ export default function App() {
   // Bumped after point edits so map, profile and point list reload the track's data.
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarWidth, setSidebarWidth] = usePaneWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_DEFAULT);
+  const [detailsWidth, setDetailsWidth] = usePaneWidth(DETAILS_WIDTH_KEY, DETAILS_DEFAULT);
 
   const reloadCatalog = useCallback(async () => {
     try {
@@ -163,7 +166,10 @@ export default function App() {
     setTracks((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
 
   return (
-    <div className={`app ${selected ? "with-details" : ""}`}>
+    <div
+      className={`app ${selected ? "with-details" : ""}`}
+      style={{ "--sidebar-w": `${sidebarWidth}px`, "--details-w": `${detailsWidth}px` } as CSSProperties}
+    >
       <Sidebar
         roots={roots}
         tracks={filtered}
@@ -176,6 +182,15 @@ export default function App() {
         onRootsChanged={reloadRoots}
         onScan={(id) => api.scanRoot(id).catch((e) => setError(String(e)))}
         onImported={reloadCatalog}
+      />
+      <PaneResizer
+        side="left"
+        cssVar="--sidebar-w"
+        width={sidebarWidth}
+        defaultWidth={SIDEBAR_DEFAULT}
+        min={PANE_MIN}
+        max={() => window.innerWidth - (selected ? detailsWidth : 0) - MAP_MIN}
+        onChange={setSidebarWidth}
       />
       <main>
         <div className="toolbar">
@@ -232,6 +247,17 @@ export default function App() {
         <Profile track={selected} version={version} onCursor={setCursor} />
       </main>
       {selected && (
+        <PaneResizer
+          side="right"
+          cssVar="--details-w"
+          width={detailsWidth}
+          defaultWidth={DETAILS_DEFAULT}
+          min={PANE_MIN}
+          max={() => window.innerWidth - sidebarWidth - MAP_MIN}
+          onChange={setDetailsWidth}
+        />
+      )}
+      {selected && (
         <Details
           track={selected}
           allTags={allTags}
@@ -278,4 +304,35 @@ function loadMarkerOptions(): MarkerOptions {
     // Fall through to defaults.
   }
   return DEFAULT_MARKER_OPTIONS;
+}
+
+const SIDEBAR_WIDTH_KEY = "sidebarWidth";
+const DETAILS_WIDTH_KEY = "detailsWidth";
+const SIDEBAR_DEFAULT = 300;
+const DETAILS_DEFAULT = 340;
+const PANE_MIN = 200;
+const MAP_MIN = 320;
+
+function usePaneWidth(key: string, fallback: number) {
+  const [width, setWidth] = useState(() => {
+    try {
+      const n = Number(localStorage.getItem(key));
+      if (Number.isFinite(n) && n >= PANE_MIN) return n;
+    } catch {
+      // Fall through to the default.
+    }
+    return fallback;
+  });
+  const change = useCallback(
+    (w: number) => {
+      setWidth(w);
+      try {
+        localStorage.setItem(key, String(w));
+      } catch {
+        // Widths are a convenience; without storage they just reset on restart.
+      }
+    },
+    [key],
+  );
+  return [width, change] as const;
 }
