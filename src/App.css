@@ -272,7 +272,8 @@ main {
 }
 .map-hint {
   position: absolute;
-  top: 10px;
+  /* Below the place search box, which shares the top edge. */
+  top: 50px;
   left: 50%;
   transform: translateX(-50%);
   background: var(--panel);
