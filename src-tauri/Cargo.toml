@@ -2,7 +2,7 @@
 name = "gpstrackmanager"
 version = "0.1.0"
 description = "A Tauri App"
-authors = ["you"]
+authors = ["Paul Wellner Bou"]
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

@@ -267,7 +267,7 @@ export function endPlace(t: TrackSummary) {
   return t.places.find((p) => p.role === "end") ?? null;
 }
 
-/** "Kelkheim → Eppstein", or one name for round trips. */
+/** "Munich → Garmisch-Partenkirchen", or one name for round trips. */
 export function routeName(t: TrackSummary): string | null {
   const [a, b] = [startPlace(t)?.name, endPlace(t)?.name];
   if (a && b && a !== b) return `${a} → ${b}`;
