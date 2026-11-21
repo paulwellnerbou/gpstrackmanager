@@ -4,6 +4,7 @@ import {
   activityOf,
   api,
   displayName,
+  routeName,
   formatDistance,
   type FileProblem,
   type GpsDevice,
@@ -28,12 +29,33 @@ interface Props {
 }
 
 /**
- * Rows without and with tags share one height each, so the list can render only what is
- * visible. These are the starting values; rows grow if their content needs more (larger text).
+ * Rows of one kind (with or without a route line and tags) share a height, so the list can
+ * render only what is visible. These are the starting values; a kind grows if its rows need
+ * more (larger text).
  */
 const ROW_H = 50;
-const ROW_TAGS_H = 70;
+const ROUTE_H = 17;
+const TAGS_H = 20;
 const OVERSCAN = 8;
+
+type RowKind = "" | "r" | "t" | "rt";
+
+/** The route line is shown only when it adds something to the name. */
+function routeLine(t: TrackSummary): string | null {
+  const route = routeName(t);
+  return route && route !== displayName(t) ? route : null;
+}
+
+function rowKind(t: TrackSummary): RowKind {
+  return `${routeLine(t) ? "r" : ""}${t.tags.length ? "t" : ""}` as RowKind;
+}
+
+const DEFAULT_ROW_HEIGHTS: Record<RowKind, number> = {
+  "": ROW_H,
+  r: ROW_H + ROUTE_H,
+  t: ROW_H + TAGS_H,
+  rt: ROW_H + ROUTE_H + TAGS_H,
+};
 
 export function Sidebar(p: Props) {
   const [devices, setDevices] = useState<GpsDevice[] | null>(null);
@@ -51,20 +73,19 @@ export function Sidebar(p: Props) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const [rowHeight, setRowHeight] = useState({ plain: ROW_H, tags: ROW_TAGS_H });
+  const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHTS);
   useLayoutEffect(() => {
-    let { plain, tags } = rowHeight;
+    const next = { ...rowHeight };
     list.current?.querySelectorAll<HTMLElement>(".list-row").forEach((row) => {
+      const kind = (row.dataset.kind ?? "") as RowKind;
       // +1 for the bottom border, which scrollHeight leaves out.
-      const need = row.scrollHeight + 1;
-      if (row.dataset.tags) tags = Math.max(tags, need);
-      else plain = Math.max(plain, need);
+      next[kind] = Math.max(next[kind], row.scrollHeight + 1);
     });
-    if (plain !== rowHeight.plain || tags !== rowHeight.tags) setRowHeight({ plain, tags });
+    if ((Object.keys(next) as RowKind[]).some((k) => next[k] !== rowHeight[k])) setRowHeight(next);
   });
   const offsets = useMemo(() => {
     const o = new Float64Array(p.tracks.length + 1);
-    p.tracks.forEach((t, i) => (o[i + 1] = o[i] + (t.tags.length ? rowHeight.tags : rowHeight.plain)));
+    p.tracks.forEach((t, i) => (o[i + 1] = o[i] + rowHeight[rowKind(t)]));
     return o;
   }, [p.tracks, rowHeight]);
   const rowAt = (y: number) => {
@@ -94,7 +115,7 @@ export function Sidebar(p: Props) {
   const onListKey = (e: KeyboardEvent) => {
     const n = p.tracks.length;
     if (!n) return;
-    const page = Math.max(1, Math.floor(viewHeight / rowHeight.plain) - 1);
+    const page = Math.max(1, Math.floor(viewHeight / rowHeight[""]) - 1);
     const next = {
       ArrowDown: selectedIndex < 0 ? 0 : selectedIndex + 1,
       ArrowUp: selectedIndex < 0 ? 0 : selectedIndex - 1,
@@ -276,7 +297,7 @@ export function Sidebar(p: Props) {
                 role="option"
                 aria-selected={t.id === p.selectedId}
                 className={`list-row ${t.id === p.selectedId ? "selected" : ""}`}
-                data-tags={t.tags.length ? "1" : undefined}
+                data-kind={rowKind(t)}
                 style={{ top: offsets[first + k], height: offsets[first + k + 1] - offsets[first + k] }}
                 onClick={() => p.onSelect(t.id)}
               >
@@ -288,6 +309,7 @@ export function Sidebar(p: Props) {
                   )}
                   {displayName(t)}
                 </div>
+                {routeLine(t) && <div className="track-route">{routeLine(t)}</div>}
                 <div className="track-meta">
                   {t.startTime ? new Date(t.startTime).toLocaleDateString() : "no date"} · {formatDistance(t.distanceM)}{" "}
                   · {t.pointCount.toLocaleString()} pts

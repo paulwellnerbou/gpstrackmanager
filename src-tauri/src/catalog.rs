@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::codec;
 use crate::model::Waypoint;
+use crate::places::{self, PLACES_VERSION, Place, Role, TrackPlace};
 use crate::process::{FileImport, PARSER_VERSION, ProcessedTrack};
 
 const SCHEMA: &str = r#"
@@ -46,6 +47,7 @@ CREATE TABLE IF NOT EXISTS tracks(
   min_lat REAL, min_lon REAL, max_lat REAL, max_lon REAL,
   min_ele REAL, max_ele REAL,
   edited INTEGER NOT NULL DEFAULT 0, -- points edited in the app; rescans leave the track alone
+  places_version INTEGER NOT NULL DEFAULT 0, -- places::PLACES_VERSION the places were found with
   UNIQUE(file_id, idx)
 );
 CREATE INDEX IF NOT EXISTS tracks_start ON tracks(start_time);
@@ -58,6 +60,15 @@ CREATE TABLE IF NOT EXISTS track_data(
   segs BLOB NOT NULL,
   overview BLOB NOT NULL,
   file_segs BLOB                 -- segment starts without glitch splits; NULL in old catalogs
+);
+CREATE TABLE IF NOT EXISTS track_places(
+  track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  role TEXT NOT NULL,            -- start | via | end
+  name TEXT NOT NULL,
+  region TEXT,
+  country TEXT,
+  PRIMARY KEY(track_id, seq)
 );
 CREATE TABLE IF NOT EXISTS waypoints(
   id INTEGER PRIMARY KEY,
@@ -84,6 +95,18 @@ CREATE TABLE IF NOT EXISTS track_tags(
 );
 "#;
 
+/// Runs after `migrate`, which adds the columns these refer to in older catalogs.
+const TRIGGERS: &str = r#"
+-- Any geometry write, also by builds that do not know about places, invalidates them;
+-- write_places runs after the geometry and marks them current again.
+CREATE TRIGGER IF NOT EXISTS track_data_insert_places AFTER INSERT ON track_data BEGIN
+  UPDATE tracks SET places_version = 0 WHERE id = NEW.track_id;
+END;
+CREATE TRIGGER IF NOT EXISTS track_data_update_places AFTER UPDATE ON track_data BEGIN
+  UPDATE tracks SET places_version = 0 WHERE id = NEW.track_id;
+END;
+"#;
+
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -95,6 +118,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     conn.busy_timeout(std::time::Duration::from_secs(10))?;
     conn.execute_batch(SCHEMA)?;
     migrate(&conn)?;
+    conn.execute_batch(TRIGGERS)?;
     Ok(conn)
 }
 
@@ -128,7 +152,10 @@ fn migrate(conn: &Connection) -> Result<()> {
         add_column(conn, "files", "parser_version", "INTEGER NOT NULL DEFAULT 0")?;
         add_column(conn, "track_data", "file_segs", "BLOB")?;
     }
-    conn.pragma_update(None, "user_version", 3)?;
+    if version < 4 {
+        add_column(conn, "tracks", "places_version", "INTEGER NOT NULL DEFAULT 0")?;
+    }
+    conn.pragma_update(None, "user_version", 4)?;
     Ok(())
 }
 
@@ -389,7 +416,42 @@ fn write_track(tx: &Transaction, track_id: i64, t: &ProcessedTrack) -> Result<()
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview, b.file_segs],
     )?;
+    write_places(tx, track_id, &t.places)?;
     Ok(())
+}
+
+pub fn write_places(conn: &Connection, track_id: i64, places: &[TrackPlace]) -> Result<()> {
+    conn.execute("DELETE FROM track_places WHERE track_id = ?1", [track_id])?;
+    let mut ins = conn.prepare_cached(
+        "INSERT INTO track_places(track_id, seq, role, name, region, country) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for (i, p) in places.iter().enumerate() {
+        let Place { name, region, country } = &p.place;
+        ins.execute(params![track_id, i as i64, p.role.as_str(), name, region, country])?;
+    }
+    conn.execute("UPDATE tracks SET places_version = ?2 WHERE id = ?1", params![track_id, PLACES_VERSION])?;
+    Ok(())
+}
+
+/// Recomputes places whose `places_version` is outdated, from the stored overview line.
+/// Returns the number of tracks updated.
+pub fn refresh_places(conn: &mut Connection) -> Result<usize> {
+    let index = places::index();
+    // Reading inside the write lock keeps a concurrent edit or scan from being overwritten
+    // with places computed from the geometry it just replaced.
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let pending: Vec<(i64, Vec<u8>)> = {
+        let mut st = tx.prepare(
+            "SELECT d.track_id, d.overview FROM track_data d JOIN tracks t ON t.id = d.track_id
+             WHERE t.places_version < ?1",
+        )?;
+        st.query_map([PLACES_VERSION], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, overview) in &pending {
+        write_places(&tx, *id, &index.track_places(&codec::decode_coords(overview)))?;
+    }
+    tx.commit()?;
+    Ok(pending.len())
 }
 
 fn write_waypoints(tx: &rusqlite::Transaction, file_id: i64, waypoints: &[Waypoint]) -> Result<()> {
@@ -482,9 +544,25 @@ pub struct TrackSummary {
     /// User choice; `None` means "as in the file".
     pub activity: Option<String>,
     pub file_activity: Option<String>,
+    /// Start, places passed through, end.
+    pub places: Vec<TrackPlace>,
+}
+
+fn all_track_places(conn: &Connection) -> Result<HashMap<i64, Vec<TrackPlace>>> {
+    let mut st = conn.prepare("SELECT track_id, role, name, region, country FROM track_places ORDER BY track_id, seq")?;
+    let mut out: HashMap<i64, Vec<TrackPlace>> = HashMap::new();
+    let mut rows = st.query([])?;
+    while let Some(r) = rows.next()? {
+        out.entry(r.get(0)?).or_default().push(TrackPlace {
+            role: Role::parse(&r.get::<_, String>(1)?),
+            place: Place { name: r.get(2)?, region: r.get(3)?, country: r.get(4)? },
+        });
+    }
+    Ok(out)
 }
 
 pub fn list_tracks(conn: &Connection) -> Result<Vec<TrackSummary>> {
+    let mut places = all_track_places(conn)?;
     let mut st = conn.prepare(
         "SELECT t.id, t.file_id, f.path, f.format, t.idx,
                 (SELECT COUNT(*) FROM tracks t2 WHERE t2.file_id = t.file_id),
@@ -503,8 +581,9 @@ pub fn list_tracks(conn: &Connection) -> Result<Vec<TrackSummary>> {
             _ => None,
         };
         let tags: Option<String> = r.get(20)?;
+        let id: i64 = r.get(0)?;
         Ok(TrackSummary {
-            id: r.get(0)?,
+            id,
             file_id: r.get(1)?,
             file_path: r.get(2)?,
             format: r.get(3)?,
@@ -526,6 +605,7 @@ pub fn list_tracks(conn: &Connection) -> Result<Vec<TrackSummary>> {
             edited: r.get::<_, i64>(22)? != 0,
             activity: r.get(23)?,
             file_activity: r.get(24)?,
+            places: places.remove(&id).unwrap_or_default(),
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -638,8 +718,84 @@ pub fn list_tags(conn: &Connection) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edit;
     use crate::parse::Format;
     use crate::process::process_file;
+
+    /// An untitled 10-point walk through Thun, imported into a fresh catalog.
+    fn thun_catalog(tag: &str) -> (std::path::PathBuf, Connection, i64) {
+        let dir = std::env::temp_dir().join(format!("gtm-places-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gpx = dir.join("thun.gpx");
+        let pts: String = (0..10)
+            .map(|i| {
+                let lat = 46.758 + i as f64 * 0.0001;
+                format!(r#"<trkpt lat="{lat:.4}" lon="7.6280"><time>2024-01-01T10:00:{i:02}Z</time></trkpt>"#)
+            })
+            .collect();
+        std::fs::write(&gpx, format!("<gpx><trk><trkseg>{pts}</trkseg></trk></gpx>")).unwrap();
+        let mut conn = open(&dir.join("c.sqlite")).unwrap();
+        let root = add_root(&conn, dir.to_str().unwrap()).unwrap();
+        write_import(&mut conn, root.id, &process_file(&gpx, Format::Gpx)).unwrap();
+        let id = list_tracks(&conn).unwrap()[0].id;
+        (dir, conn, id)
+    }
+
+    fn start_name(conn: &Connection, id: i64) -> Option<String> {
+        let t = list_tracks(conn).unwrap().into_iter().find(|t| t.id == id).unwrap();
+        t.places.into_iter().find(|p| p.role == Role::Start).map(|p| p.place.name)
+    }
+
+    fn places_version(conn: &Connection, id: i64) -> i64 {
+        conn.query_row("SELECT places_version FROM tracks WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn import_and_edits_store_current_places() {
+        let (dir, mut conn, id) = thun_catalog("edit");
+        assert_eq!(start_name(&conn, id).as_deref(), Some("Thun"));
+        assert_eq!(refresh_places(&mut conn).unwrap(), 0);
+
+        edit::delete_points(&mut conn, id, &[0]).unwrap();
+        let part = edit::split(&mut conn, id, 4).unwrap();
+        for t in [id, part] {
+            assert_eq!(start_name(&conn, t).as_deref(), Some("Thun"));
+            assert_eq!(places_version(&conn, t), PLACES_VERSION);
+        }
+        // Untitled parts are named by their route, not "file.gpx (part 2)".
+        assert_eq!(list_tracks(&conn).unwrap().iter().find(|t| t.id == part).unwrap().title, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn foreign_geometry_writes_are_refreshed() {
+        let (dir, mut conn, id) = thun_catalog("refresh");
+        // What a build without places does: rewrite the geometry and nothing else.
+        conn.execute("DELETE FROM track_places", []).unwrap();
+        conn.execute("UPDATE track_data SET overview = overview WHERE track_id = ?1", [id]).unwrap();
+        assert_eq!(places_version(&conn, id), 0);
+        assert_eq!(refresh_places(&mut conn).unwrap(), 1);
+        assert_eq!(start_name(&conn, id).as_deref(), Some("Thun"));
+        assert_eq!(refresh_places(&mut conn).unwrap(), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn version_3_catalog_is_migrated_and_backfilled() {
+        let (dir, conn, id) = thun_catalog("migrate");
+        conn.execute_batch(
+            "DROP TRIGGER track_data_insert_places; DROP TRIGGER track_data_update_places;
+             DROP TABLE track_places; ALTER TABLE tracks DROP COLUMN places_version; PRAGMA user_version = 3;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let mut conn = open(&dir.join("c.sqlite")).unwrap();
+        assert_eq!(start_name(&conn, id), None);
+        assert_eq!(refresh_places(&mut conn).unwrap(), 1);
+        assert_eq!(start_name(&conn, id).as_deref(), Some("Thun"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     fn setup(name: &str) -> (std::path::PathBuf, Connection, Root) {
         let dir = std::env::temp_dir().join(format!("gtm-cat-{name}-{}", std::process::id()));

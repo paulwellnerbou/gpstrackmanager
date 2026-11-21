@@ -9,6 +9,7 @@ pub mod geometry;
 pub mod lod;
 pub mod model;
 pub mod parse;
+pub mod places;
 pub mod process;
 pub mod scan;
 
@@ -121,6 +122,13 @@ async fn scan_root(app: AppHandle, id: i64) -> CmdResult<()> {
         }
     });
     Ok(())
+}
+
+/// Recomputes missing or outdated places; returns how many tracks changed.
+#[tauri::command]
+async fn refresh_places(app: AppHandle) -> CmdResult<usize> {
+    // Its own connection: the long refresh must not hold the shared one.
+    blocking(app, |s| catalog::refresh_places(&mut catalog::open(&s.db_path)?)).await
 }
 
 #[tauri::command]
@@ -341,6 +349,7 @@ pub fn run() {
             remove_root,
             scan_root,
             list_tracks,
+            refresh_places,
             list_problem_files,
             get_overview,
             get_track_points,
