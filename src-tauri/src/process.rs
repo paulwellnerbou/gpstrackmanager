@@ -13,7 +13,7 @@ use crate::places::{self, TrackPlace};
 const OVERVIEW_ZOOM: f64 = 10.0;
 
 /// Bump when parsing or processing changes so the next scan re-reads every file.
-pub const PARSER_VERSION: i64 = 4;
+pub const PARSER_VERSION: i64 = 6;
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct Stats {
@@ -146,20 +146,49 @@ fn split_at_glitches(p: &mut crate::model::Points) {
     p.seg_starts = starts;
 }
 
-/// Earliest and latest time, ignoring fixes more than a year from the median: a single
-/// bogus fix (1970, 2099, a GPS week rollover) would otherwise give the track a wrong date.
+/// Earliest and latest time of the recording, robust against corrupt fixes (1902, 2037, a
+/// GPS week rollover), which raw logs can scatter over decades.
+///
+/// The core is every run of at least three fixes that are each within a day of the previous
+/// one, in recording order; corrupt fixes stand alone between good ones. Of the core, the
+/// largest group without a gap of more than a year counts, so a multi-year log keeps its full
+/// range. Single fixes within a week of that range extend it (a device switched on briefly).
 fn time_range(time: &[i64]) -> (Option<i64>, Option<i64>) {
-    const YEAR_MS: i64 = 366 * 86_400_000;
-    let mut ts: Vec<i64> = time.iter().copied().filter(|&t| t != NO_TIME).collect();
+    const DAY: u64 = 86_400_000;
+    const YEAR: u64 = 366 * DAY;
+    const NEAR: u64 = 7 * DAY;
+    let ts: Vec<i64> = time.iter().copied().filter(|&t| t != NO_TIME).collect();
     if ts.is_empty() {
         return (None, None);
     }
-    let mid = ts.len() / 2;
-    let median = *ts.select_nth_unstable(mid).1;
-    let ok = ts.iter().copied().filter(|t| t.abs_diff(median) <= YEAR_MS as u64);
-    ok.fold((None, None), |(lo, hi): (Option<i64>, Option<i64>), t| {
-        (Some(lo.map_or(t, |l| l.min(t))), Some(hi.map_or(t, |h| h.max(t))))
-    })
+    let mut core = Vec::new();
+    let mut run_start = 0;
+    for i in 1..=ts.len() {
+        if i == ts.len() || ts[i].abs_diff(ts[i - 1]) > DAY {
+            if i - run_start >= 3 {
+                core.extend_from_slice(&ts[run_start..i]);
+            }
+            run_start = i;
+        }
+    }
+    // Sparse loggers (one fix every few days) have no runs; then every fix counts.
+    if core.is_empty() {
+        core = ts.clone();
+    }
+    core.sort_unstable();
+    let (mut best, mut start) = ((0, 0), 0);
+    for i in 1..=core.len() {
+        if i == core.len() || core[i].abs_diff(core[i - 1]) > YEAR {
+            if i - start > best.1 - best.0 {
+                best = (start, i);
+            }
+            start = i;
+        }
+    }
+    let (lo, hi) = (core[best.0], core[best.1 - 1]);
+    let first = ts.iter().copied().filter(|&t| t < lo && lo.abs_diff(t) <= NEAR).min().unwrap_or(lo);
+    let last = ts.iter().copied().filter(|&t| t > hi && t.abs_diff(hi) <= NEAR).max().unwrap_or(hi);
+    (Some(first), Some(last))
 }
 
 pub fn process_track(mut t: ParsedTrack) -> ProcessedTrack {
@@ -254,6 +283,33 @@ mod tests {
         t.points.start_segment();
         let processed = process_track(t);
         assert_eq!(codec::decode_u32(&processed.blobs.file_segs), vec![0]);
+    }
+
+    #[test]
+    fn multi_year_log_keeps_its_full_range() {
+        let day = 86_400_000;
+        let start = 1_700_000_000_000;
+        // A fix every 10 days for 3 years.
+        let pts: Vec<_> = (0..110).map(|i| (50.0 + i as f64 * 1e-4, 8.0, start + i * 10 * day)).collect();
+        let t = process_track(track(&pts, &[]));
+        assert_eq!((t.stats.start_time, t.stats.end_time), (Some(start), Some(start + 109 * 10 * day)));
+    }
+
+    #[test]
+    fn scattered_corrupt_fixes_are_ignored_but_late_single_fixes_count() {
+        let (day, start) = (86_400_000, 1_700_000_000_000);
+        let mut pts = Vec::new();
+        for i in 0..300 {
+            pts.push((50.0 + i as f64 * 1e-4, 8.0, start + i * 60_000));
+            // Every tenth fix is corrupt, spread over decades either side.
+            if i % 10 == 5 {
+                pts.push((50.0, 8.0, start + (i - 150) * 400 * day));
+            }
+        }
+        // The device switched on briefly two days later.
+        pts.push((50.1, 8.0, start + 2 * day));
+        let t = process_track(track(&pts, &[]));
+        assert_eq!((t.stats.start_time, t.stats.end_time), (Some(start), Some(start + 2 * day)));
     }
 
     #[test]

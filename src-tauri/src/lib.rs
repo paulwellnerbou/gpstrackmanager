@@ -167,6 +167,16 @@ async fn get_track_point_table(app: AppHandle, id: i64) -> CmdResult<Response> {
     blocking(app, move |s| Ok(f64_bytes(&edit::point_table(&*s.track(id)?)))).await
 }
 
+/// Frees the cached track once nothing is selected; a large one holds tens of MB.
+#[tauri::command]
+async fn release_track_cache(app: AppHandle) -> CmdResult<()> {
+    blocking(app, |s| {
+        *s.track_cache.lock().unwrap() = None;
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn delete_track_points(app: AppHandle, id: i64, indices: Vec<u32>) -> CmdResult<()> {
     blocking(app, move |s| s.write(|c| edit::delete_points(c, id, &indices))).await
@@ -355,6 +365,7 @@ pub fn run() {
             get_track_points,
             get_track_profile,
             get_track_point_table,
+            release_track_cache,
             delete_track_points,
             split_track,
             revert_file,

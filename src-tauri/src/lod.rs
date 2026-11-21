@@ -72,17 +72,22 @@ mod tests {
 
     #[test]
     fn stationary_runs_are_fast() {
-        let n = 400_000;
-        let mut lat = vec![50.0; n];
-        let mut lon = vec![8.0; n];
-        // A walk, then a long stationary stretch with tiny jitter, then a walk.
-        for i in 0..1000 {
-            lat[i] = 50.0 + i as f64 * 1e-4;
-            lat[n - 1 - i] = 49.0 - i as f64 * 1e-4;
+        // A walk in, 200k identical fixes (a logger lying still), a walk out. Every interior
+        // fix is equally far from the line, which made each split peel off a single point.
+        let (walk, still) = (1000, 200_000);
+        let mut lat = Vec::new();
+        let mut lon = Vec::new();
+        for i in 0..walk {
+            lat.push(50.0 + i as f64 * 1e-4);
+            lon.push(8.0);
         }
-        for i in (1000..n - 1000).step_by(2) {
-            lon[i] = 8.0 + 1e-7;
+        lat.extend(std::iter::repeat_n(50.2, still));
+        lon.extend(std::iter::repeat_n(8.1, still));
+        for i in 0..walk {
+            lat.push(50.0 - i as f64 * 1e-4);
+            lon.push(8.3);
         }
+        let n = lat.len();
         let t = std::time::Instant::now();
         compute_importance(&lat, &lon, &[(0, n)]);
         assert!(t.elapsed().as_secs_f64() < 2.0, "took {:?}", t.elapsed());

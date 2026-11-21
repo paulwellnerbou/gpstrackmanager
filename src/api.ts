@@ -179,6 +179,7 @@ export const api = {
   openInMaps: (id: number) => invoke<void>("open_in_maps", { id }),
   revealTrackFile: (id: number) => invoke<void>("reveal_track_file", { id }),
 
+  releaseTrackCache: () => invoke<void>("release_track_cache"),
   async pointTable(id: number): Promise<PointTable> {
     const v = f64(await invoke<ArrayBuffer>("get_track_point_table", { id }));
     const C = 8;

@@ -89,6 +89,8 @@ export default function App() {
   const scanEnded = useCallback(
     (error?: string) => {
       scanRunning.current = false;
+      // Also after a failure: files imported before it are in the catalog.
+      reloadCatalog().then(() => setVersion((v) => v + 1));
       if (error) {
         setError(error);
         setScan(null);
@@ -96,7 +98,7 @@ export default function App() {
       const next = scanQueue.current.shift();
       if (next != null) startScan(next);
     },
-    [startScan],
+    [startScan, reloadCatalog],
   );
 
   useEffect(() => {
@@ -109,10 +111,8 @@ export default function App() {
     const unlisten = [
       listen<ScanProgress>("scan-progress", (e) => {
         setScan(e.payload);
-        if (e.payload.phase !== "done") return;
-        // A rescan may have replaced the selected track's points and waypoints.
-        reloadCatalog().then(() => setVersion((v) => v + 1));
-        scanEnded();
+        // A rescan may have replaced the selected track's points and waypoints; scanEnded reloads.
+        if (e.payload.phase === "done") scanEnded();
       }),
       listen<string>("scan-error", (e) => scanEnded(e.payload)),
     ];
@@ -173,6 +173,7 @@ export default function App() {
     if (selectedId == null) {
       tableFor.current = null;
       setEditPending(false);
+      api.releaseTrackCache().catch(() => undefined);
       return;
     }
     api

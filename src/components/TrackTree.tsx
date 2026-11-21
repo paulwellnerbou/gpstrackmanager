@@ -140,6 +140,17 @@ export function TrackTree(p: Props) {
     return starts.map((s, k) => [s, starts[k + 1] ?? table.length] as [number, number]);
   }, [table]);
 
+  // Removing or merging a segment renumbers the ones after it; their collapse state would
+  // then land on other segments, so it is dropped for this track.
+  const segCount = useRef<{ trackId: number; count: number } | null>(null);
+  useEffect(() => {
+    const prev = segCount.current;
+    segCount.current = { trackId: track.id, count: segments.length };
+    if (prev?.trackId !== track.id || prev.count === segments.length) return;
+    const prefix = segKey(track.id, 0).slice(0, -1);
+    setCollapsed((c) => new Set([...c].filter((k) => !k.startsWith(prefix))));
+  }, [track.id, segments.length]);
+
   const blocks = useMemo(() => {
     const out: Block[] = [];
     const showFile = p.fileTracks.length > 1 || waypoints.length > 0;

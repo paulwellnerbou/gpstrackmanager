@@ -43,7 +43,10 @@ pub type HashCache = HashMap<(String, u64, i64), String>;
 /// `known` holds the hashes of all catalogued files.
 pub fn find_devices(volumes_dir: &Path, roots: &[Root], known: &HashSet<String>, cache: &mut HashCache) -> Result<Vec<GpsDevice>> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(volumes_dir) else { return Ok(out) };
+    let Ok(entries) = std::fs::read_dir(volumes_dir) else {
+        cache.clear();
+        return Ok(out);
+    };
     for entry in entries.flatten() {
         let volume = entry.path();
         if roots.iter().any(|r| Path::new(&r.path).starts_with(&volume)) {
@@ -82,6 +85,9 @@ pub fn find_devices(volumes_dir: &Path, roots: &[Root], known: &HashSet<String>,
         files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
         out.push(GpsDevice { volume: volume.to_string_lossy().into_owned(), model, files });
     }
+    // Only files still present stay cached, so the cache follows what is plugged in.
+    let present: HashSet<&str> = out.iter().flat_map(|d| d.files.iter().map(|f| f.path.as_str())).collect();
+    cache.retain(|(path, _, _), _| present.contains(path.as_str()));
     Ok(out)
 }
 
