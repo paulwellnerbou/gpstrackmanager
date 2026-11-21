@@ -48,7 +48,7 @@ fn add_root(state: State<AppState>, path: String) -> CmdResult<catalog::Root> {
 
 #[tauri::command]
 fn remove_root(state: State<AppState>, id: i64) -> CmdResult<()> {
-    catalog::remove_root(&state.db.lock().unwrap(), id).map_err(err)
+    catalog::remove_root(&mut state.db.lock().unwrap(), id).map_err(err)
 }
 
 /// Runs in the background; progress arrives as `scan-progress` events.

@@ -12,7 +12,9 @@ import {
   EMPTY_SELECTION,
   bboxOf,
   clickSelection,
-  deletePoints as confirmAndDelete,
+  confirmDelete,
+  isSecondaryClick,
+  isToggleKey,
   rangeSelection,
   type PointSelection,
 } from "../pointEditing";
@@ -37,6 +39,9 @@ interface Props {
   onSelectionChange: (s: PointSelection) => void;
   /** Scrolls the tree to a point selected elsewhere (on the map). */
   reveal: { index: number; seq: number } | null;
+  /** An edit is being applied; the shown indices are about to change. */
+  locked: boolean;
+  onBeginEdit: () => void;
   onZoomTo: (bbox: [number, number, number, number]) => void;
   onPanTo: (lonLat: [number, number]) => void;
   onEdited: () => void;
@@ -165,7 +170,7 @@ export function TrackTree(p: Props) {
   };
 
   const select = (i: number, e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) =>
-    p.onSelectionChange(clickSelection(p.selection, i, { shift: e.shiftKey, toggle: e.metaKey || e.ctrlKey }));
+    p.onSelectionChange(clickSelection(p.selection, i, { shift: e.shiftKey, toggle: isToggleKey(e) }));
 
   const selectRange = (start: number, end: number) => p.onSelectionChange(rangeSelection(start, end));
 
@@ -177,14 +182,21 @@ export function TrackTree(p: Props) {
 
   const run = async (action: () => Promise<unknown>) => {
     setMenu(null);
+    if (p.locked) return;
+    p.onBeginEdit();
     try {
-      if ((await action()) !== false) p.onEdited();
+      await action();
+      p.onEdited();
     } catch (e) {
       p.onError(String(e));
     }
   };
 
-  const deletePoints = (indices: number[], what: string) => run(() => confirmAndDelete(track.id, indices, what));
+  const deletePoints = async (indices: number[], what: string) => {
+    setMenu(null);
+    if (p.locked || !(await confirmDelete(indices.length, what))) return;
+    await run(() => api.deleteTrackPoints(track.id, indices));
+  };
 
   const range = (s: number, e: number) => Array.from({ length: e - s }, (_, k) => s + k);
 
@@ -218,7 +230,7 @@ export function TrackTree(p: Props) {
         style={{ top, paddingLeft: 8 + depth * 14 }}
         title={gap ? "Line break: GPS glitch or recording gap" : undefined}
         onMouseDown={(e) => {
-          if (e.button !== 0) return;
+          if (isSecondaryClick(e)) return;
           box.current?.focus({ preventScroll: true });
           select(i, e);
           p.onPanTo([t.lon[i], t.lat[i]]);
@@ -226,7 +238,7 @@ export function TrackTree(p: Props) {
         onContextMenu={(e) => {
           e.preventDefault();
           if (!selection.has(i)) p.onSelectionChange({ set: new Set([i]), anchor: i });
-          setMenu({ x: e.clientX, y: e.clientY, target: "points" });
+          if (!p.locked) setMenu({ x: e.clientX, y: e.clientY, target: "points" });
         }}
         onMouseEnter={() => p.onHover([t.lon[i], t.lat[i]])}
       >
@@ -370,7 +382,7 @@ export function TrackTree(p: Props) {
           {
             className: `seg-row${segSelected ? " selected" : ""}`,
             onMouseDown: (e) => {
-              if (e.button !== 0) return;
+              if (isSecondaryClick(e)) return;
               box.current?.focus({ preventScroll: true });
               selectRange(b.start, b.end);
               zoomTo(range(b.start, b.end));
@@ -378,7 +390,7 @@ export function TrackTree(p: Props) {
             onContextMenu: (e) => {
               e.preventDefault();
               selectRange(b.start, b.end);
-              setMenu({ x: e.clientX, y: e.clientY, target: "seg", seg: b.seg });
+              if (!p.locked) setMenu({ x: e.clientX, y: e.clientY, target: "seg", seg: b.seg });
             },
           },
         );
@@ -454,6 +466,7 @@ export function TrackTree(p: Props) {
           selection={sorted}
           onClose={closeMenu}
           onZoomTo={p.onZoomTo}
+          onBeginEdit={p.onBeginEdit}
           onEdited={p.onEdited}
           onError={p.onError}
         />

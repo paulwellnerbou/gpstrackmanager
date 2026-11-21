@@ -32,6 +32,8 @@ interface Props {
   selection: PointSelection;
   onSelectionChange: (s: PointSelection) => void;
   reveal: { index: number; seq: number } | null;
+  locked: boolean;
+  onBeginEdit: () => void;
   onZoomTo: (bbox: [number, number, number, number]) => void;
   onPanTo: (lonLat: [number, number]) => void;
   onEdited: () => void;
@@ -170,8 +172,12 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
               className="link"
               onClick={() =>
                 call(async () => {
-                  await api.revertFile(track.fileId);
-                  edit.onEdited();
+                  edit.onBeginEdit();
+                  try {
+                    await api.revertFile(track.fileId);
+                  } finally {
+                    edit.onEdited();
+                  }
                 })
               }
               title="Discard all point edits and split-off parts of this file"

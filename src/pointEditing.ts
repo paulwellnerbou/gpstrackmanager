@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { api, type PointTable } from "./api";
+import type { PointTable } from "./api";
 
 /** Selected point indices of the selected track, shared by the tree and the map. */
 export interface PointSelection {
@@ -50,19 +50,23 @@ export function bboxOf(table: PointTable, indices: Iterable<number>): [number, n
   return Number.isFinite(x0) ? [x0, y0, x1, y1] : null;
 }
 
-/** Deletes after confirmation (single points need none). Returns whether anything was deleted. */
-export async function deletePoints(trackId: number, indices: number[], what: string): Promise<boolean> {
-  if (!indices.length) return false;
-  if (indices.length > 1) {
-    const ok = await ask(`Delete ${what} from this track?`, {
-      title: "Delete points",
-      kind: "warning",
-      okLabel: "Delete",
-    });
-    if (!ok) return false;
-  }
-  await api.deleteTrackPoints(trackId, indices);
-  return true;
+/** Asks before deleting more than one point. */
+export async function confirmDelete(count: number, what: string): Promise<boolean> {
+  if (count === 0) return false;
+  if (count === 1) return true;
+  return ask(`Delete ${what} from this track?`, { title: "Delete points", kind: "warning", okLabel: "Delete" });
+}
+
+const isMac = /Mac/i.test(navigator.userAgent);
+
+/** ⌘ toggles on macOS, where Ctrl-click is the secondary click; Ctrl elsewhere. */
+export function isToggleKey(e: { metaKey: boolean; ctrlKey: boolean }) {
+  return isMac ? e.metaKey : e.ctrlKey;
+}
+
+/** Ctrl-click on macOS opens the context menu and must not change the selection. */
+export function isSecondaryClick(e: { button: number; ctrlKey: boolean }) {
+  return e.button !== 0 || (isMac && e.ctrlKey);
 }
 
 export function pointsLabel(count: number) {

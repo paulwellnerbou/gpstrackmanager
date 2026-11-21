@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use fitparser::de::{DecodeOption, from_bytes_with_options};
+use fitparser::de::{DecodeOption, FitObject, FitStreamProcessor};
 use fitparser::profile::MesgNum;
 use fitparser::{FitDataRecord, Value};
 
@@ -10,16 +10,7 @@ const SEMICIRCLE_TO_DEG: f64 = 180.0 / 2_147_483_648.0;
 /// One track per FIT file; a timer stop/start begins a new segment. Laps become lap
 /// waypoints at the position where each lap ended.
 pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
-    let records = match fitparser::from_bytes(bytes) {
-        Ok(r) => r,
-        // Devices that lose power mid-write leave bad CRCs but valid records.
-        Err(_) => {
-            let opts = [DecodeOption::SkipHeaderCrcValidation, DecodeOption::SkipDataCrcValidation]
-                .into_iter()
-                .collect();
-            from_bytes_with_options(bytes, &opts).map_err(|e| anyhow!("FIT decode failed: {e}"))?
-        }
-    };
+    let records = decode_lenient(bytes)?;
 
     let mut points = Points::default();
     let mut sport: Option<String> = None;
@@ -83,6 +74,33 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
     }
     let activity = sport.as_deref().and_then(crate::activity::normalize);
     Ok(ParsedFile { tracks: vec![ParsedTrack { name: None, description: None, activity, points }], waypoints: laps })
+}
+
+/// Decodes message by message and keeps everything before the first error, so files cut
+/// off by a power loss (bad CRC, truncated last message) still yield their points.
+fn decode_lenient(mut buffer: &[u8]) -> Result<Vec<FitDataRecord>> {
+    let mut processor = FitStreamProcessor::new();
+    processor.add_option(DecodeOption::SkipHeaderCrcValidation);
+    processor.add_option(DecodeOption::SkipDataCrcValidation);
+    let mut records = Vec::new();
+    while !buffer.is_empty() {
+        let (rest, obj) = match processor.deserialize_next(buffer) {
+            Ok(r) => r,
+            Err(e) if records.is_empty() => return Err(anyhow!("FIT decode failed: {e}")),
+            Err(_) => break,
+        };
+        match obj {
+            FitObject::Crc(_) => processor.reset(),
+            FitObject::DataMessage(msg) => match processor.decode_message(msg) {
+                Ok(rec) => records.push(rec),
+                Err(e) if records.is_empty() => return Err(anyhow!("FIT decode failed: {e}")),
+                Err(_) => break,
+            },
+            _ => {}
+        }
+        buffer = rest;
+    }
+    Ok(records)
 }
 
 fn field<'a>(rec: &'a FitDataRecord, name: &str) -> Option<&'a Value> {

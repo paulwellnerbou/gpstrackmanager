@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::Serialize;
 
 use crate::codec;
 use crate::model::Waypoint;
 use crate::places::{self, PLACES_VERSION, Place, Role, TrackPlace};
-use crate::process::{FileImport, PARSER_VERSION};
+use crate::process::{FileImport, PARSER_VERSION, ProcessedTrack};
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS roots(
@@ -171,10 +171,32 @@ pub fn list_roots(conn: &Connection) -> Result<Vec<Root>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Opens a write transaction that takes the write lock immediately. A deferred one that
+/// reads first fails at once (SQLITE_BUSY_SNAPSHOT, no busy wait) if the background scan
+/// commits in between.
+pub fn write_tx(conn: &mut Connection) -> Result<Transaction<'_>> {
+    Ok(conn.transaction_with_behavior(TransactionBehavior::Immediate)?)
+}
+
+/// Library folders must not overlap: a file under two roots would switch owner on every
+/// scan, and removing either root would delete its catalog entries.
 pub fn add_root(conn: &Connection, path: &str) -> Result<Root> {
-    conn.execute("INSERT OR IGNORE INTO roots(path) VALUES (?1)", [path])?;
-    let id = conn.query_row("SELECT id FROM roots WHERE path = ?1", [path], |r| r.get(0))?;
-    Ok(Root { id, path: path.to_string() })
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let path = canonical.to_string_lossy().into_owned();
+    for root in list_roots(conn)? {
+        if root.path == path {
+            return Ok(root);
+        }
+        let other = Path::new(&root.path);
+        if canonical.starts_with(other) {
+            anyhow::bail!("{path} is already part of the library folder {}", root.path);
+        }
+        if other.starts_with(&canonical) {
+            anyhow::bail!("{path} contains the library folder {}; remove that one first", root.path);
+        }
+    }
+    conn.execute("INSERT INTO roots(path) VALUES (?1)", [&path])?;
+    Ok(Root { id: conn.last_insert_rowid(), path })
 }
 
 pub fn get_root(conn: &Connection, id: i64) -> Result<Root> {
@@ -184,8 +206,16 @@ pub fn get_root(conn: &Connection, id: i64) -> Result<Root> {
 }
 
 /// Removes the root from the catalog only; files on disk are untouched.
-pub fn remove_root(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("DELETE FROM roots WHERE id = ?1", [id])?;
+pub fn remove_root(conn: &mut Connection, id: i64) -> Result<()> {
+    let tx = write_tx(conn)?;
+    tx.execute("DELETE FROM roots WHERE id = ?1", [id])?;
+    delete_unused_tags(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn delete_unused_tags(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM track_tags)", [])?;
     Ok(())
 }
 
@@ -223,64 +253,164 @@ pub fn record_unsupported(conn: &Connection, root_id: i64, path: &str, size: i64
     Ok(())
 }
 
-/// Writes one imported file. Tracks are matched by their index inside the file so user
-/// titles, descriptions and tags survive when a changed file is re-imported.
+/// Writes one imported file in its own transaction.
 pub fn write_import(conn: &mut Connection, root_id: i64, imp: &FileImport) -> Result<()> {
-    let tx = conn.transaction()?;
-    let (status, error) = match &imp.result {
-        Ok(_) => ("ok", None),
-        Err(e) => ("error", Some(e.as_str())),
+    let tx = write_tx(conn)?;
+    write_import_in(&tx, root_id, imp)?;
+    tx.commit()?;
+    Ok(())
+}
+
+struct ExistingTrack {
+    id: i64,
+    idx: i64,
+    name: Option<String>,
+    start_time: Option<i64>,
+    edited: bool,
+}
+
+/// Pairs each new track with the catalog track it most likely is: same start time and
+/// name, then same start time, then same position. Matching by position alone would move
+/// titles and tags to another track when a changed file reorders or gains tracks.
+fn match_tracks(existing: &[ExistingTrack], new: &[ProcessedTrack]) -> Vec<Option<usize>> {
+    let mut used = vec![false; existing.len()];
+    let mut out = vec![None; new.len()];
+    for pass in 0..3 {
+        for (k, t) in new.iter().enumerate() {
+            if out[k].is_some() {
+                continue;
+            }
+            let start = t.stats.start_time;
+            let hit = existing.iter().enumerate().position(|(j, e)| {
+                !used[j]
+                    && match pass {
+                        0 => start.is_some() && e.start_time == start && e.name == t.name,
+                        1 => start.is_some() && e.start_time == start,
+                        _ => e.idx == k as i64,
+                    }
+            });
+            if let Some(j) = hit {
+                used[j] = true;
+                out[k] = Some(j);
+            }
+        }
+    }
+    out
+}
+
+/// Writes one imported file. User titles, descriptions, tags and activities stay with their
+/// track; tracks edited in the app keep their edited geometry. A file that could not be
+/// read keeps all its tracks: a read error on a flaky disk must not wipe the catalog.
+pub fn write_import_in(tx: &Transaction, root_id: i64, imp: &FileImport) -> Result<()> {
+    let file = match &imp.result {
+        Ok(file) => file,
+        Err(e) => {
+            // parser_version 0 makes the next scan try this file again.
+            tx.execute(
+                "INSERT INTO files(root_id, path, size, mtime, hash, format, status, error, missing, scanned_at,
+                   parser_version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'error', ?7, 0, ?8, 0)
+                 ON CONFLICT(path) DO UPDATE SET status = 'error', error = excluded.error, missing = 0,
+                   scanned_at = excluded.scanned_at, parser_version = 0",
+                params![root_id, imp.path, imp.size, imp.mtime, imp.hash, imp.format, e, now_ms()],
+            )?;
+            return Ok(());
+        }
     };
     let file_id: i64 = tx.query_row(
         "INSERT INTO files(root_id, path, size, mtime, hash, format, status, error, missing, scanned_at,
            parser_version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'ok', NULL, 0, ?7, ?8)
          ON CONFLICT(path) DO UPDATE SET root_id = excluded.root_id, size = excluded.size,
            mtime = excluded.mtime, hash = excluded.hash, format = excluded.format,
-           status = excluded.status, error = excluded.error, missing = 0, scanned_at = excluded.scanned_at,
+           status = 'ok', error = NULL, missing = 0, scanned_at = excluded.scanned_at,
            parser_version = excluded.parser_version
          RETURNING id",
-        params![root_id, imp.path, imp.size, imp.mtime, imp.hash, imp.format, status, error, now_ms(), PARSER_VERSION],
+        params![root_id, imp.path, imp.size, imp.mtime, imp.hash, imp.format, now_ms(), PARSER_VERSION],
         |r| r.get(0),
     )?;
+    write_waypoints(tx, file_id, &file.waypoints)?;
 
-    let tracks = imp.result.as_ref().map(|f| f.tracks.as_slice()).unwrap_or(&[]);
-    let waypoints = imp.result.as_ref().map(|f| f.waypoints.as_slice()).unwrap_or(&[]);
-    write_waypoints(&tx, file_id, waypoints)?;
-    for (idx, t) in tracks.iter().enumerate() {
-        let s = &t.stats;
-        let bbox = s.bbox.map(|b| b.map(Some)).unwrap_or([None; 4]);
-        let track_id: Option<i64> = tx.query_row(
-            "INSERT INTO tracks(file_id, idx, name, file_description, start_time, end_time, point_count,
-               distance_m, min_lat, min_lon, max_lat, max_lon, min_ele, max_ele, file_activity)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
-             ON CONFLICT(file_id, idx) DO UPDATE SET name = excluded.name,
-               file_description = excluded.file_description, file_activity = excluded.file_activity,
-               start_time = excluded.start_time,
-               end_time = excluded.end_time, point_count = excluded.point_count,
-               distance_m = excluded.distance_m, min_lat = excluded.min_lat, min_lon = excluded.min_lon,
-               max_lat = excluded.max_lat, max_lon = excluded.max_lon, min_ele = excluded.min_ele,
-               max_ele = excluded.max_ele
-             WHERE tracks.edited = 0
-             RETURNING id",
-            params![
-                file_id, idx as i64, t.name, t.description, s.start_time, s.end_time,
-                s.point_count as i64, s.distance_m, bbox[0], bbox[1], bbox[2], bbox[3], s.min_ele, s.max_ele,
-                t.activity
-            ],
-            |r| r.get(0),
-        ).optional()?;
-        let Some(track_id) = track_id else { continue };
-        let b = &t.blobs;
-        tx.execute(
-            "INSERT OR REPLACE INTO track_data(track_id, coords, ele, time, importance, segs, overview, file_segs)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview, b.file_segs],
-        )?;
-        write_places(&tx, track_id, &t.places)?;
+    let existing: Vec<ExistingTrack> = {
+        let mut st = tx.prepare("SELECT id, idx, name, start_time, edited FROM tracks WHERE file_id = ?1 AND idx >= 0")?;
+        st.query_map([file_id], |r| {
+            Ok(ExistingTrack {
+                id: r.get(0)?,
+                idx: r.get(1)?,
+                name: r.get(2)?,
+                start_time: r.get(3)?,
+                edited: r.get::<_, i64>(4)? != 0,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    let matches = match_tracks(&existing, &file.tracks);
+    // Park the existing tracks outside every real position so new positions can be
+    // assigned without UNIQUE(file_id, idx) conflicts.
+    for e in &existing {
+        tx.execute("UPDATE tracks SET idx = ?2 WHERE id = ?1", params![e.id, PARKED_IDX - e.id])?;
     }
-    tx.execute("DELETE FROM tracks WHERE file_id = ?1 AND idx >= ?2", params![file_id, tracks.len() as i64])?;
-    tx.commit()?;
+    for (k, t) in file.tracks.iter().enumerate() {
+        match matches[k].map(|j| &existing[j]) {
+            Some(e) if e.edited => {
+                tx.execute("UPDATE tracks SET idx = ?2 WHERE id = ?1", params![e.id, k as i64])?;
+            }
+            Some(e) => {
+                tx.execute("UPDATE tracks SET idx = ?2 WHERE id = ?1", params![e.id, k as i64])?;
+                write_track(tx, e.id, t)?;
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO tracks(file_id, idx, point_count, distance_m) VALUES (?1, ?2, 0, 0)",
+                    params![file_id, k as i64],
+                )?;
+                write_track(tx, tx.last_insert_rowid(), t)?;
+            }
+        }
+    }
+    let matched: Vec<usize> = matches.iter().flatten().copied().collect();
+    for (j, e) in existing.iter().enumerate() {
+        if matched.contains(&j) {
+            continue;
+        }
+        if e.edited {
+            // No longer in the file, but edited by the user: keep it like a split-off part.
+            tx.execute(
+                "UPDATE tracks SET idx = (SELECT MIN(0, MIN(idx)) FROM tracks WHERE file_id = ?2 AND idx > ?3) - 1
+                 WHERE id = ?1",
+                params![e.id, file_id, PARKED_IDX / 2],
+            )?;
+        } else {
+            tx.execute("DELETE FROM tracks WHERE id = ?1", [e.id])?;
+        }
+    }
+    delete_unused_tags(tx)?;
+    Ok(())
+}
+
+/// Below every real or split-off position; parked rows only exist inside one transaction.
+const PARKED_IDX: i64 = -(1 << 40);
+
+fn write_track(tx: &Transaction, track_id: i64, t: &ProcessedTrack) -> Result<()> {
+    let s = &t.stats;
+    let bbox = s.bbox.map(|b| b.map(Some)).unwrap_or([None; 4]);
+    tx.execute(
+        "UPDATE tracks SET name = ?2, file_description = ?3, file_activity = ?4, start_time = ?5, end_time = ?6,
+           point_count = ?7, distance_m = ?8, min_lat = ?9, min_lon = ?10, max_lat = ?11, max_lon = ?12,
+           min_ele = ?13, max_ele = ?14
+         WHERE id = ?1",
+        params![
+            track_id, t.name, t.description, t.activity, s.start_time, s.end_time, s.point_count as i64,
+            s.distance_m, bbox[0], bbox[1], bbox[2], bbox[3], s.min_ele, s.max_ele
+        ],
+    )?;
+    let b = &t.blobs;
+    tx.execute(
+        "INSERT OR REPLACE INTO track_data(track_id, coords, ele, time, importance, segs, overview, file_segs)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview, b.file_segs],
+    )?;
+    write_places(tx, track_id, &t.places)?;
     Ok(())
 }
 
@@ -367,7 +497,7 @@ pub fn list_file_waypoints(conn: &Connection, file_id: i64) -> Result<Vec<Waypoi
 
 /// Flags catalogued files that were not found on disk, like Lightroom's "missing" state.
 pub fn update_missing(conn: &mut Connection, root_id: i64, seen: &[String]) -> Result<usize> {
-    let tx = conn.transaction()?;
+    let tx = write_tx(conn)?;
     tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS seen(path TEXT PRIMARY KEY); DELETE FROM seen;")?;
     {
         let mut ins = tx.prepare("INSERT OR IGNORE INTO seen(path) VALUES (?1)")?;
@@ -559,7 +689,7 @@ pub fn set_track_activity(conn: &Connection, id: i64, activity: Option<&str>) ->
 }
 
 pub fn set_track_tags(conn: &mut Connection, id: i64, tags: &[String]) -> Result<()> {
-    let tx = conn.transaction()?;
+    let tx = write_tx(conn)?;
     tx.execute("DELETE FROM track_tags WHERE track_id = ?1", [id])?;
     for tag in tags.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
         tx.execute("INSERT OR IGNORE INTO tags(name) VALUES (?1)", [tag])?;
@@ -568,7 +698,7 @@ pub fn set_track_tags(conn: &mut Connection, id: i64, tags: &[String]) -> Result
             params![id, tag],
         )?;
     }
-    tx.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM track_tags)", [])?;
+    delete_unused_tags(&tx)?;
     tx.commit()?;
     Ok(())
 }
@@ -658,6 +788,84 @@ mod tests {
         assert_eq!(start_name(&conn, id), None);
         assert_eq!(refresh_places(&mut conn).unwrap(), 1);
         assert_eq!(start_name(&conn, id).as_deref(), Some("Thun"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn setup(name: &str) -> (std::path::PathBuf, Connection, Root) {
+        let dir = std::env::temp_dir().join(format!("gtm-cat-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = open(&dir.join("c.sqlite")).unwrap();
+        let root = add_root(&conn, dir.to_str().unwrap()).unwrap();
+        (dir, conn, root)
+    }
+
+    fn trk(name: &str, minute: u32) -> String {
+        format!(
+            r#"<trk><name>{name}</name><trkseg><trkpt lat="50.0" lon="8.0"><time>2024-01-01T10:{minute:02}:00Z</time></trkpt><trkpt lat="50.001" lon="8.0"><time>2024-01-01T10:{minute:02}:30Z</time></trkpt></trkseg></trk>"#
+        )
+    }
+
+    #[test]
+    fn failed_reread_keeps_tracks_and_metadata() {
+        let (dir, mut conn, root) = setup("err");
+        let f = dir.join("a.gpx");
+        std::fs::write(&f, format!("<gpx>{}</gpx>", trk("A", 1))).unwrap();
+        write_import(&mut conn, root.id, &process_file(&f, Format::Gpx)).unwrap();
+        let id = list_tracks(&conn).unwrap()[0].id;
+        update_track_meta(&conn, id, Some("My title"), None).unwrap();
+        set_track_tags(&mut conn, id, &["walk".into()]).unwrap();
+
+        std::fs::write(&f, "<gpx><trk><trkseg><trkpt la").unwrap();
+        write_import(&mut conn, root.id, &process_file(&f, Format::Gpx)).unwrap();
+        let t = &list_tracks(&conn).unwrap()[0];
+        assert_eq!((t.id, t.title.as_deref(), t.tags.clone()), (id, Some("My title"), vec!["walk".to_string()]));
+        assert_eq!(known_files(&conn, root.id).unwrap().values().next().unwrap().parser_version, 0, "retried next scan");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reordered_tracks_keep_their_titles() {
+        let (dir, mut conn, root) = setup("order");
+        let f = dir.join("a.gpx");
+        std::fs::write(&f, format!("<gpx>{}{}</gpx>", trk("A", 1), trk("B", 2))).unwrap();
+        write_import(&mut conn, root.id, &process_file(&f, Format::Gpx)).unwrap();
+        let b = list_tracks(&conn).unwrap().into_iter().find(|t| t.name.as_deref() == Some("B")).unwrap();
+        update_track_meta(&conn, b.id, Some("Title of B"), None).unwrap();
+
+        // A new track is inserted at the front and B moves to position 2.
+        std::fs::write(&f, format!("<gpx>{}{}{}</gpx>", trk("New", 0), trk("A", 1), trk("B", 2))).unwrap();
+        write_import(&mut conn, root.id, &process_file(&f, Format::Gpx)).unwrap();
+        let tracks = list_tracks(&conn).unwrap();
+        assert_eq!(tracks.len(), 3);
+        let b2 = tracks.iter().find(|t| t.id == b.id).unwrap();
+        assert_eq!((b2.name.as_deref(), b2.title.as_deref(), b2.idx), (Some("B"), Some("Title of B"), 2));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edited_track_survives_removal_from_file() {
+        let (dir, mut conn, root) = setup("edited");
+        let f = dir.join("a.gpx");
+        std::fs::write(&f, format!("<gpx>{}{}</gpx>", trk("A", 1), trk("B", 2))).unwrap();
+        write_import(&mut conn, root.id, &process_file(&f, Format::Gpx)).unwrap();
+        let b = list_tracks(&conn).unwrap().into_iter().find(|t| t.name.as_deref() == Some("B")).unwrap();
+        conn.execute("UPDATE tracks SET edited = 1 WHERE id = ?1", [b.id]).unwrap();
+
+        std::fs::write(&f, format!("<gpx>{}</gpx>", trk("A", 1))).unwrap();
+        write_import(&mut conn, root.id, &process_file(&f, Format::Gpx)).unwrap();
+        let kept = list_tracks(&conn).unwrap().into_iter().find(|t| t.id == b.id).expect("edited track kept");
+        assert!(kept.idx < 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn overlapping_library_folders_are_refused() {
+        let (dir, conn, _root) = setup("roots");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        assert!(add_root(&conn, dir.join("sub").to_str().unwrap()).is_err());
+        assert!(add_root(&conn, dir.parent().unwrap().to_str().unwrap()).is_err());
+        assert_eq!(add_root(&conn, dir.to_str().unwrap()).unwrap().id, list_roots(&conn).unwrap()[0].id);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

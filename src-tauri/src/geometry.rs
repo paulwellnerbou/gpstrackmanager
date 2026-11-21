@@ -16,14 +16,15 @@ fn segments(data: &TrackData) -> Vec<(usize, usize)> {
 
 /// Points for display as flat `[lon, lat, …]` with NaN pairs as line breaks.
 /// `tolerance` is in normalised mercator units (see `geo::pixel_size_at_zoom`);
-/// `bbox` (`[min_lon, min_lat, max_lon, max_lat]`) drops everything off-screen, keeping one
-/// point on either side so lines still run out of the viewport.
+/// `bbox` (`[min_lon, min_lat, max_lon, max_lat]`) drops lines that cannot touch the view.
+/// A line is kept when its own bounding box overlaps the view, so a long straight stretch
+/// crossing the screen survives even with both ends far outside.
 pub fn select_points(data: &TrackData, tolerance: f32, bbox: Option<[f64; 4]>) -> Vec<f64> {
-    let inside = |i: usize| match bbox {
+    let overlaps = |a: usize, b: usize| match bbox {
         None => true,
         Some([x0, y0, x1, y1]) => {
-            let (lat, lon) = data.coords[i];
-            lon >= x0 && lon <= x1 && lat >= y0 && lat <= y1
+            let ((la, lo_a), (lb, lo_b)) = (data.coords[a], data.coords[b]);
+            la.max(lb) >= y0 && la.min(lb) <= y1 && lo_a.max(lo_b) >= x0 && lo_a.min(lo_b) <= x1
         }
     };
     let mut out = Vec::new();
@@ -33,9 +34,9 @@ pub fn select_points(data: &TrackData, tolerance: f32, bbox: Option<[f64; 4]>) -
         candidates.extend((s..e).filter(|&i| data.importance[i] >= tolerance));
         let mut last_emitted: Option<usize> = None;
         for (j, &i) in candidates.iter().enumerate() {
-            let keep = inside(i)
-                || (j > 0 && inside(candidates[j - 1]))
-                || (j + 1 < candidates.len() && inside(candidates[j + 1]));
+            let keep = overlaps(i, i)
+                || (j > 0 && overlaps(candidates[j - 1], i))
+                || (j + 1 < candidates.len() && overlaps(i, candidates[j + 1]));
             if !keep {
                 continue;
             }
@@ -107,4 +108,25 @@ pub fn profile(data: &TrackData, buckets: usize) -> Vec<f64> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_a_long_line_crossing_the_view() {
+        // Two vertices far left and right of a small view centred between them.
+        let data = TrackData {
+            coords: vec![(50.0, 7.0), (50.0, 9.0)],
+            ele: vec![f32::NAN; 2],
+            time: vec![crate::model::NO_TIME; 2],
+            importance: vec![f32::INFINITY; 2],
+            seg_starts: vec![0],
+            file_seg_starts: vec![0],
+        };
+        let pts = select_points(&data, 0.0, Some([7.9, 49.9, 8.1, 50.1]));
+        assert_eq!(pts.len(), 4, "both ends are kept so the line is drawn");
+        assert!(select_points(&data, 0.0, Some([7.9, 51.0, 8.1, 51.2])).is_empty());
+    }
 }

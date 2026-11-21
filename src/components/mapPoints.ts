@@ -1,5 +1,6 @@
 import type { GeoJSONSource, Map as MapLibreMap, PointLike } from "maplibre-gl";
 import type { PointTable } from "../api";
+import { isToggleKey } from "../pointEditing";
 
 export type PointView = "line" | "points" | "both";
 
@@ -129,7 +130,7 @@ export function installBoxSelect(
       rect.remove();
       const end = { x: u.clientX - origin.left, y: u.clientY - origin.top };
       if (Math.abs(end.x - start.x) < 4 && Math.abs(end.y - start.y) < 4) return;
-      onSelect([start.x, start.y], [end.x, end.y], u.metaKey || u.ctrlKey);
+      onSelect([start.x, start.y], [end.x, end.y], isToggleKey(u));
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);

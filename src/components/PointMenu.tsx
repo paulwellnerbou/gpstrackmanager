@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { api, type PointTable } from "../api";
-import { bboxOf, deletePoints, pointsLabel } from "../pointEditing";
+import { bboxOf, confirmDelete, pointsLabel } from "../pointEditing";
 
 interface Props {
   x: number;
@@ -11,12 +11,15 @@ interface Props {
   selection: number[];
   onClose: () => void;
   onZoomTo: (bbox: [number, number, number, number]) => void;
+  /** Called right before an edit is sent; the selection's indices become invalid. */
+  onBeginEdit: () => void;
   onEdited: () => void;
   onError: (message: string) => void;
 }
 
 /** Context menu for selected points; opened from the tree or the map. */
-export function PointMenu({ x, y, trackId, table, selection, onClose, onZoomTo, onEdited, onError }: Props) {
+export function PointMenu(props: Props) {
+  const { x, y, trackId, table, selection, onClose, onZoomTo, onBeginEdit, onEdited, onError } = props;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("mousedown", onClose);
@@ -27,12 +30,21 @@ export function PointMenu({ x, y, trackId, table, selection, onClose, onZoomTo, 
     };
   }, [onClose]);
 
-  const run = async (action: () => Promise<boolean | unknown>) => {
+  const run = async (action: () => Promise<unknown>) => {
     onClose();
+    onBeginEdit();
     try {
-      if ((await action()) !== false) onEdited();
+      await action();
+      onEdited();
     } catch (e) {
       onError(String(e));
+    }
+  };
+
+  const remove = async () => {
+    onClose();
+    if (await confirmDelete(selection.length, pointsLabel(selection.length))) {
+      await run(() => api.deleteTrackPoints(trackId, selection));
     }
   };
 
@@ -44,10 +56,7 @@ export function PointMenu({ x, y, trackId, table, selection, onClose, onZoomTo, 
       <button disabled={!canSplit} onClick={() => run(() => api.splitTrack(trackId, splitAt))}>
         Split track here (new track starts at #{(splitAt ?? 0) + 1})
       </button>
-      <button
-        disabled={!selection.length}
-        onClick={() => run(() => deletePoints(trackId, selection, pointsLabel(selection.length)))}
-      >
+      <button disabled={!selection.length} onClick={remove}>
         Delete {selection.length === 1 ? "point" : pointsLabel(selection.length)}
       </button>
       <hr />
