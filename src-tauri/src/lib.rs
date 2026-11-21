@@ -9,6 +9,7 @@ pub mod geometry;
 pub mod lod;
 pub mod model;
 pub mod parse;
+pub mod places;
 pub mod process;
 pub mod scan;
 
@@ -63,6 +64,16 @@ fn scan_root(app: tauri::AppHandle, state: State<AppState>, id: i64) -> CmdResul
         }
     });
     Ok(())
+}
+
+/// Recomputes missing or outdated places; returns how many tracks changed.
+#[tauri::command]
+async fn refresh_places(state: State<'_, AppState>) -> CmdResult<usize> {
+    let db_path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || catalog::refresh_places(&mut catalog::open(&db_path)?))
+        .await
+        .map_err(err)?
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -246,6 +257,7 @@ pub fn run() {
             remove_root,
             scan_root,
             list_tracks,
+            refresh_places,
             list_problem_files,
             get_overview,
             get_track_points,

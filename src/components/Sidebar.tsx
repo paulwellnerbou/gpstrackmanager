@@ -4,6 +4,7 @@ import {
   activityOf,
   api,
   displayName,
+  routeName,
   formatDistance,
   type FileProblem,
   type GpsDevice,
@@ -180,6 +181,7 @@ export function Sidebar(p: Props) {
                 )}
                 {displayName(t)}
               </div>
+              {routeName(t) && routeName(t) !== displayName(t) && <div className="track-route">{routeName(t)}</div>}
               <div className="track-meta">
                 {t.startTime ? new Date(t.startTime).toLocaleDateString() : "no date"} · {formatDistance(t.distanceM)} ·{" "}
                 {t.pointCount.toLocaleString()} pts

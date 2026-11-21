@@ -6,6 +6,7 @@ use crate::geo::{haversine_m, pixel_size_at_zoom};
 use crate::lod::compute_importance;
 use crate::model::{NO_TIME, ParsedTrack, Waypoint};
 use crate::parse::{self, Format};
+use crate::places::{self, TrackPlace};
 
 /// The library overview is drawn from a pre-thinned copy so showing every track at once
 /// never touches the full point data.
@@ -43,6 +44,7 @@ pub struct ProcessedTrack {
     pub activity: Option<String>,
     pub stats: Stats,
     pub blobs: TrackBlobs,
+    pub places: Vec<TrackPlace>,
 }
 
 pub struct ProcessedFile {
@@ -174,6 +176,8 @@ pub fn process_track(mut t: ParsedTrack) -> ProcessedTrack {
         }
     }
 
+    // The overview is detailed enough for town-level places and much shorter than the track.
+    let places = places::index().track_places(&codec::decode_coords(&overview));
     let blobs = TrackBlobs {
         coords: codec::encode_coords(&p.lat, &p.lon),
         ele: codec::encode_f32(&p.ele),
@@ -183,5 +187,5 @@ pub fn process_track(mut t: ParsedTrack) -> ProcessedTrack {
         file_segs: codec::encode_u32(&file_segs),
         overview,
     };
-    ProcessedTrack { name: t.name, description: t.description, activity: t.activity, stats, blobs }
+    ProcessedTrack { name: t.name, description: t.description, activity: t.activity, stats, blobs, places }
 }

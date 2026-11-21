@@ -71,6 +71,10 @@ export default function App() {
   useEffect(() => {
     reloadRoots();
     reloadCatalog();
+    api
+      .refreshPlaces()
+      .then((n) => (n > 0 ? reloadCatalog() : undefined))
+      .catch((e) => setError(String(e)));
     const unlisten = [
       listen<ScanProgress>("scan-progress", (e) => {
         setScan(e.payload);
@@ -92,6 +96,7 @@ export default function App() {
         t.fileDescription ?? "",
         activityOf(t)?.label ?? "",
         ...t.tags,
+        ...t.places.flatMap((p) => [p.name, p.region ?? "", p.country ?? ""]),
       ].some((s) => s.toLowerCase().includes(q)),
     );
   }, [tracks, query]);
