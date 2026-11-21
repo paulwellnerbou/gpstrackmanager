@@ -1,8 +1,9 @@
 import { Marker, type Map as MapLibreMap } from "maplibre-gl";
-import type { PointTable } from "../api";
+import type { PointTable, WaypointRow } from "../api";
 
 export interface MarkerOptions {
   startEnd: boolean;
+  waypoints: boolean;
   distance: boolean;
   /** Which values the labels show. */
   showDistance: boolean;
@@ -13,6 +14,7 @@ export interface MarkerOptions {
 
 export const DEFAULT_MARKER_OPTIONS: MarkerOptions = {
   startEnd: true,
+  waypoints: true,
   distance: true,
   showDistance: true,
   showSpeed: false,
@@ -26,6 +28,7 @@ const STEPS_M = [10, 20, 50, 100, 200, 500, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4, 1e5, 2
 /** DOM markers are cheap only in small numbers. */
 const MAX_DISTANCE_MARKERS = 200;
 const MAX_SELECTION_LABELS = 40;
+const MAX_WAYPOINTS = 300;
 
 const ARROW_SVG =
   '<svg viewBox="0 0 16 16" width="16" height="16"><path d="M8 1 L14 14 L8 10.5 L2 14 Z" fill="#f08c00" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg>';
@@ -73,12 +76,22 @@ export class TrackMarkers {
   private table: PointTable | null = null;
   private selection: number[] = [];
   private options = DEFAULT_MARKER_OPTIONS;
+  private waypoints: WaypointRow[] = [];
+  private focusedWaypoint: number | null = null;
 
   constructor(private map: MapLibreMap) {
     map.on("moveend", () => this.render());
   }
 
-  update(table: PointTable | null, selection: number[], options: MarkerOptions) {
+  update(
+    table: PointTable | null,
+    selection: number[],
+    options: MarkerOptions,
+    waypoints: WaypointRow[],
+    focusedWaypoint: number | null,
+  ) {
+    this.waypoints = waypoints;
+    this.focusedWaypoint = focusedWaypoint;
     this.table = table;
     this.selection = selection;
     this.options = options;
@@ -123,12 +136,23 @@ export class TrackMarkers {
     return el;
   }
 
+  private waypoint(w: WaypointRow, focused: boolean) {
+    const el = document.createElement("div");
+    el.className = `trk-wp trk-wp-${w.kind}${focused ? " focused" : ""}`;
+    const when = w.time != null ? ` · ${new Date(w.time).toLocaleString()}` : "";
+    el.title = `${w.name ?? "Waypoint"}${when}${w.description ? `\n${w.description}` : ""}`;
+    if (focused) {
+      const l = document.createElement("div");
+      l.className = "trk-label";
+      l.textContent = w.name ?? "Waypoint";
+      el.appendChild(l);
+    }
+    return el;
+  }
+
   render() {
     this.clear();
-    const t = this.table;
-    if (!t || t.length === 0) return;
     const o = this.options;
-    const n = t.length;
     const b = this.map.getBounds();
     const padX = (b.getEast() - b.getWest()) * 0.1;
     const padY = (b.getNorth() - b.getSouth()) * 0.1;
@@ -137,6 +161,20 @@ export class TrackMarkers {
       lon <= b.getEast() + padX &&
       lat >= b.getSouth() - padY &&
       lat <= b.getNorth() + padY;
+
+    // The focused waypoint is shown even with waypoints switched off: it was picked explicitly.
+    let shown = 0;
+    for (const w of this.waypoints) {
+      const focused = w.id === this.focusedWaypoint;
+      if (!focused && (!o.waypoints || shown >= MAX_WAYPOINTS)) continue;
+      if (!visible(w.lon, w.lat)) continue;
+      this.add(this.waypoint(w, focused), w.lon, w.lat);
+      shown++;
+    }
+
+    const t = this.table;
+    if (!t || t.length === 0) return;
+    const n = t.length;
 
     if (o.distance) {
       const center = this.map.getCenter();

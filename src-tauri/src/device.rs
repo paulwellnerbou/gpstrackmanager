@@ -122,7 +122,7 @@ pub fn import_files(conn: &mut Connection, root: &Root, files: &[String]) -> Res
             .result
             .as_ref()
             .ok()
-            .and_then(|t| t.first())
+            .and_then(|f| f.tracks.first())
             .and_then(|t| t.stats.start_time)
             .unwrap_or(parsed.mtime);
         let year = chrono::DateTime::from_timestamp_millis(when).map(|d| d.year()).unwrap_or(1970);

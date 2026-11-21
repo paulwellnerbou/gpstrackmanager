@@ -58,6 +58,37 @@ impl Points {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Waypoint {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub symbol: Option<String>,
+    /// "waypoint" or "lap" (lap markers from FIT or GPS loggers).
+    pub kind: &'static str,
+    pub lat: f64,
+    pub lon: f64,
+    pub ele: Option<f32>,
+    pub time: Option<i64>,
+}
+
+impl Waypoint {
+    /// Converters write FIT laps as waypoints named `LAP001`, …
+    pub fn kind_for_name(name: Option<&str>) -> &'static str {
+        match name {
+            Some(n) if n.len() > 3 && n[..3].eq_ignore_ascii_case("lap") && n[3..].trim().parse::<u32>().is_ok() => {
+                "lap"
+            }
+            _ => "waypoint",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ParsedFile {
+    pub tracks: Vec<ParsedTrack>,
+    pub waypoints: Vec<Waypoint>,
+}
+
 #[derive(Debug)]
 pub struct ParsedTrack {
     pub name: Option<String>,

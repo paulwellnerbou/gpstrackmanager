@@ -54,6 +54,18 @@ export function activityOf(t: TrackSummary) {
   return ACTIVITIES.find((a) => a.key === key) ?? null;
 }
 
+export interface WaypointRow {
+  id: number;
+  name: string | null;
+  description: string | null;
+  symbol: string | null;
+  kind: "waypoint" | "lap";
+  lat: number;
+  lon: number;
+  ele: number | null;
+  time: number | null;
+}
+
 export interface PointTable {
   length: number;
   lat: Float64Array;
@@ -98,6 +110,10 @@ export interface GpsDevice {
 
 export type Line = [number, number][];
 
+/** A camera request for the map; `seq` makes repeated requests for the same place distinct. */
+export type MapFocus =
+  { bbox: [number, number, number, number]; seq: number } | { center: [number, number]; seq: number };
+
 const f64 = (buf: ArrayBuffer) => new Float64Array(buf);
 
 /** Splits a flat `[lon, lat, …]` list at NaN pairs into lines. */
@@ -133,6 +149,10 @@ export const api = {
   deleteTrackPoints: (id: number, indices: number[]) => invoke<void>("delete_track_points", { id, indices }),
   splitTrack: (id: number, at: number) => invoke<number>("split_track", { id, at }),
   revertFile: (fileId: number) => invoke<void>("revert_file", { fileId }),
+  extractTrackRange: (id: number, start: number, end: number) =>
+    invoke<number>("extract_track_range", { id, start, end }),
+  joinTrackSegment: (id: number, at: number) => invoke<void>("join_track_segment", { id, at }),
+  listFileWaypoints: (fileId: number) => invoke<WaypointRow[]>("list_file_waypoints", { fileId }),
   openInGoogleEarth: (id: number) => invoke<void>("open_in_google_earth", { id }),
   openInMaps: (id: number) => invoke<void>("open_in_maps", { id }),
   revealTrackFile: (id: number) => invoke<void>("reveal_track_file", { id }),

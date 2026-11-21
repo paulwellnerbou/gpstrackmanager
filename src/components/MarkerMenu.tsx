@@ -9,6 +9,7 @@ interface Props {
 const ITEMS: { key: keyof MarkerOptions; label: string; group: "show" | "label" }[] = [
   { key: "startEnd", label: "Start / End", group: "show" },
   { key: "distance", label: "Distance markers", group: "show" },
+  { key: "waypoints", label: "Waypoints and laps", group: "show" },
   { key: "showDistance", label: "Distance", group: "label" },
   { key: "showSpeed", label: "Speed", group: "label" },
   { key: "showAltitude", label: "Altitude", group: "label" },

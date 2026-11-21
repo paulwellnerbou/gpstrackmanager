@@ -8,8 +8,9 @@ import {
   formatDuration,
   type PointTable,
   type TrackSummary,
+  type WaypointRow,
 } from "../api";
-import { PointList } from "./PointList";
+import { TrackTree } from "./TrackTree";
 
 interface Props {
   track: TrackSummary;
@@ -18,9 +19,15 @@ interface Props {
   onSetTags: (tags: string[]) => void;
   onSetActivity: (activity: string | null) => void;
   table: PointTable | null;
+  fileTracks: TrackSummary[];
+  waypoints: WaypointRow[];
+  focusedWaypoint: number | null;
+  onSelectTrack: (id: number) => void;
+  onFocusWaypoint: (id: number | null) => void;
   onHover: (lonLat: [number, number] | null) => void;
   onSelectionChange: (sortedIndices: number[]) => void;
   onZoomTo: (bbox: [number, number, number, number]) => void;
+  onPanTo: (lonLat: [number, number]) => void;
   onEdited: () => void;
   onError: (message: string) => void;
 }
@@ -163,7 +170,7 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
           </div>
         )}
       </div>
-      <PointList track={track} {...edit} />
+      <TrackTree track={track} {...edit} />
     </aside>
   );
 }

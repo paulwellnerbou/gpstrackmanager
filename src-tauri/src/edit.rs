@@ -15,7 +15,8 @@ use crate::process::{ProcessedTrack, process_file, process_track};
 pub const POINT_COLUMNS: usize = 8;
 
 /// Flat rows of `[lat, lon, ele, time_ms, segment_start, distance_m, speed_ms, bearing_deg]`.
-/// NaN marks unknown values; `segment_start` is 1 for a segment's first point.
+/// NaN marks unknown values. `segment_start` is 1 where one of the file's segments begins,
+/// 2 where the line is only broken at a glitch or recording gap, else 0.
 /// Distance does not include gaps between segments. Speed and bearing are taken over
 /// both neighbours within the segment, which smooths single-fix jitter.
 pub fn point_table(data: &TrackData) -> Vec<f64> {
@@ -62,11 +63,16 @@ pub fn point_table(data: &TrackData) -> Vec<f64> {
             lon,
             data.ele[i] as f64,
             time(i),
-            if is_start[i] { 1.0 } else { 0.0 },
+            if is_start[i] { 2.0 } else { 0.0 },
             dist[i],
             speed,
             bearing,
         ]);
+    }
+    for &s in &data.file_seg_starts {
+        if let Some(row) = out.get_mut(s as usize * POINT_COLUMNS..) {
+            row[4] = 1.0;
+        }
     }
     out
 }
@@ -79,8 +85,9 @@ fn subset(data: &TrackData, keep: &[usize]) -> Points {
     let mut prev: Option<usize> = None;
     for &i in keep {
         let mut new_segment = prev.is_none();
-        while si < data.seg_starts.len() && data.seg_starts[si] as usize <= i {
-            if prev.is_none_or(|pv| data.seg_starts[si] as usize > pv) {
+        let starts = &data.file_seg_starts;
+        while si < starts.len() && starts[si] as usize <= i {
+            if prev.is_none_or(|pv| starts[si] as usize > pv) {
                 new_segment = true;
             }
             si += 1;
@@ -115,9 +122,9 @@ fn write_geometry(tx: &Transaction, track_id: i64, t: &ProcessedTrack) -> Result
     )?;
     let b = &t.blobs;
     tx.execute(
-        "INSERT OR REPLACE INTO track_data(track_id, coords, ele, time, importance, segs, overview)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview],
+        "INSERT OR REPLACE INTO track_data(track_id, coords, ele, time, importance, segs, overview, file_segs)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview, b.file_segs],
     )?;
     Ok(())
 }
@@ -145,13 +152,24 @@ pub fn delete_points(conn: &mut Connection, track_id: i64, indices: &[u32]) -> R
 /// Splits before point `at`; the original keeps `[0, at)`, a new track gets the rest.
 /// Returns the new track's id.
 pub fn split(conn: &mut Connection, track_id: i64, at: u32) -> Result<i64> {
-    let data = catalog::load_track_data(conn, track_id)?;
-    let (n, at) = (data.coords.len(), at as usize);
+    let n = catalog::load_track_data(conn, track_id)?.coords.len() as u32;
     if at == 0 || at >= n {
         bail!("Cannot split at the first or after the last point.");
     }
-    let first = process(subset(&data, &(0..at).collect::<Vec<_>>()));
-    let second = process(subset(&data, &(at..n).collect::<Vec<_>>()));
+    extract(conn, track_id, at, n)
+}
+
+/// Moves points `[start, end)` into a new track (e.g. one segment); the original keeps
+/// the rest. Returns the new track's id.
+pub fn extract(conn: &mut Connection, track_id: i64, start: u32, end: u32) -> Result<i64> {
+    let data = catalog::load_track_data(conn, track_id)?;
+    let (n, start, end) = (data.coords.len(), start as usize, (end as usize).min(data.coords.len()));
+    let rest: Vec<usize> = (0..start).chain(end..n).collect();
+    if rest.is_empty() || end <= start {
+        bail!("Nothing would remain in the original track.");
+    }
+    let first = process(subset(&data, &rest));
+    let second = process(subset(&data, &(start..end).collect::<Vec<_>>()));
 
     let tx = conn.transaction()?;
     let (file_id, path, base): (i64, String, Option<String>) = tx.query_row(
@@ -182,6 +200,20 @@ pub fn split(conn: &mut Connection, track_id: i64, at: u32) -> Result<i64> {
     Ok(new_id)
 }
 
+/// Merges the file segment starting at point `at` into the previous one.
+pub fn join_segment(conn: &mut Connection, track_id: i64, at: u32) -> Result<()> {
+    let mut data = catalog::load_track_data(conn, track_id)?;
+    if at == 0 || !data.file_seg_starts.contains(&at) {
+        bail!("No segment starts at point {}.", at + 1);
+    }
+    data.file_seg_starts.retain(|&s| s != at);
+    let processed = process(subset(&data, &(0..data.coords.len()).collect::<Vec<_>>()));
+    let tx = conn.transaction()?;
+    write_geometry(&tx, track_id, &processed)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Drops all edits of a file's tracks (including split-off parts) and re-imports it.
 /// Titles, descriptions and tags of the file's own tracks are kept.
 pub fn revert_file(conn: &mut Connection, file_id: i64) -> Result<()> {
@@ -209,6 +241,7 @@ mod tests {
             ele: vec![f32::NAN; n],
             time: vec![NO_TIME; n],
             importance: vec![0.0; n],
+            file_seg_starts: seg_starts.clone(),
             seg_starts,
         }
     }
@@ -263,9 +296,55 @@ mod tests {
     }
 
     #[test]
+    fn segments_extract_join_and_waypoints() {
+        let dir = std::env::temp_dir().join(format!("gtm-seg-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gpx = dir.join("s.gpx");
+        let seg = |k: usize| -> String {
+            let pts: String = (0..3)
+                .map(|i| {
+                    let n = k * 3 + i;
+                    format!(r#"<trkpt lat="50.{n:03}" lon="8.0"><time>2024-01-01T10:00:{n:02}Z</time></trkpt>"#)
+                })
+                .collect();
+            format!("<trkseg>{pts}</trkseg>")
+        };
+        let body = format!(
+            r#"<gpx><wpt lat="50.1" lon="8.1"><name>Hut</name></wpt><trk>{}{}{}</trk></gpx>"#,
+            seg(0),
+            seg(1),
+            seg(2)
+        );
+        std::fs::write(&gpx, body).unwrap();
+
+        let mut conn = catalog::open(&dir.join("c.sqlite")).unwrap();
+        let root = catalog::add_root(&conn, dir.to_str().unwrap()).unwrap();
+        catalog::write_import(&mut conn, root.id, &process_file(&gpx, Format::Gpx)).unwrap();
+        let t = &catalog::list_tracks(&conn).unwrap()[0];
+        let (id, file_id) = (t.id, t.file_id);
+        let wps = catalog::list_file_waypoints(&conn, file_id).unwrap();
+        assert_eq!((wps.len(), wps[0].name.as_deref(), wps[0].kind.as_str()), (1, Some("Hut"), "waypoint"));
+        assert_eq!(catalog::load_track_data(&conn, id).unwrap().file_seg_starts, vec![0, 3, 6]);
+
+        let middle = extract(&mut conn, id, 3, 6).unwrap();
+        let rest = catalog::load_track_data(&conn, id).unwrap();
+        assert_eq!((rest.coords.len(), rest.file_seg_starts.clone()), (6, vec![0, 3]));
+        assert_eq!(catalog::load_track_data(&conn, middle).unwrap().coords.len(), 3);
+
+        join_segment(&mut conn, id, 3).unwrap();
+        assert_eq!(catalog::load_track_data(&conn, id).unwrap().file_seg_starts, vec![0]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn point_table_flags_segment_starts() {
         let mut d = data(4, vec![0, 2]);
         d.time = vec![0, 10_000, 20_000, 30_000];
+        // A glitch break at 3 that is not one of the file's segments.
+        let mut glitch = data(4, vec![0, 3]);
+        glitch.file_seg_starts = vec![0];
+        let g: Vec<f64> = point_table(&glitch).chunks(POINT_COLUMNS).map(|r| r[4]).collect();
+        assert_eq!(g, vec![1.0, 0.0, 0.0, 2.0]);
         let t = point_table(&d);
         let rows: Vec<&[f64]> = t.chunks(POINT_COLUMNS).collect();
         let flags: Vec<f64> = rows.iter().map(|r| r[4]).collect();

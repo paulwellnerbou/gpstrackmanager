@@ -4,12 +4,15 @@ use std::time::UNIX_EPOCH;
 use crate::codec;
 use crate::geo::{haversine_m, pixel_size_at_zoom};
 use crate::lod::compute_importance;
-use crate::model::{NO_TIME, ParsedTrack};
+use crate::model::{NO_TIME, ParsedTrack, Waypoint};
 use crate::parse::{self, Format};
 
 /// The library overview is drawn from a pre-thinned copy so showing every track at once
 /// never touches the full point data.
 const OVERVIEW_ZOOM: f64 = 10.0;
+
+/// Bump when parsing or processing changes so the next scan re-reads every file.
+pub const PARSER_VERSION: i64 = 2;
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct Stats {
@@ -27,7 +30,10 @@ pub struct TrackBlobs {
     pub ele: Vec<u8>,
     pub time: Vec<u8>,
     pub importance: Vec<u8>,
+    /// All line breaks: the file's segments plus glitch and gap splits.
     pub segs: Vec<u8>,
+    /// Segment starts as in the file (or as edited), without glitch splits.
+    pub file_segs: Vec<u8>,
     pub overview: Vec<u8>,
 }
 
@@ -39,13 +45,18 @@ pub struct ProcessedTrack {
     pub blobs: TrackBlobs,
 }
 
+pub struct ProcessedFile {
+    pub tracks: Vec<ProcessedTrack>,
+    pub waypoints: Vec<Waypoint>,
+}
+
 pub struct FileImport {
     pub path: String,
     pub size: i64,
     pub mtime: i64,
     pub hash: String,
     pub format: &'static str,
-    pub result: Result<Vec<ProcessedTrack>, String>,
+    pub result: Result<ProcessedFile, String>,
 }
 
 pub fn file_mtime(meta: &std::fs::Metadata) -> i64 {
@@ -79,7 +90,10 @@ pub fn process_file(path: &Path, format: Format) -> FileImport {
     };
     let hash = hash_bytes(&bytes);
     let result = parse::parse(format, &bytes)
-        .map(|tracks| tracks.into_iter().filter(|t| !t.points.is_empty()).map(process_track).collect())
+        .map(|file| ProcessedFile {
+            tracks: file.tracks.into_iter().filter(|t| !t.points.is_empty()).map(process_track).collect(),
+            waypoints: file.waypoints,
+        })
         .map_err(|e| format!("{e:#}"));
     FileImport { path: path_str, size, mtime, hash, format: format.as_str(), result }
 }
@@ -114,6 +128,7 @@ fn split_at_glitches(p: &mut crate::model::Points) {
 }
 
 pub fn process_track(mut t: ParsedTrack) -> ProcessedTrack {
+    let file_segs = t.points.seg_starts.clone();
     split_at_glitches(&mut t.points);
     let p = &t.points;
     let segments = p.segments();
@@ -165,6 +180,7 @@ pub fn process_track(mut t: ParsedTrack) -> ProcessedTrack {
         time: codec::encode_i64(&p.time),
         importance: codec::encode_f32(&importance),
         segs: codec::encode_u32(&p.seg_starts),
+        file_segs: codec::encode_u32(&file_segs),
         overview,
     };
     ProcessedTrack { name: t.name, description: t.description, activity: t.activity, stats, blobs }

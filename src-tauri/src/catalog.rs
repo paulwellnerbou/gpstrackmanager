@@ -6,7 +6,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use crate::codec;
-use crate::process::FileImport;
+use crate::model::Waypoint;
+use crate::process::{FileImport, PARSER_VERSION};
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS roots(
@@ -24,7 +25,8 @@ CREATE TABLE IF NOT EXISTS files(
   status TEXT NOT NULL,          -- ok | error | unsupported
   error TEXT,
   missing INTEGER NOT NULL DEFAULT 0,
-  scanned_at INTEGER NOT NULL
+  scanned_at INTEGER NOT NULL,
+  parser_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS files_hash ON files(hash);
 CREATE TABLE IF NOT EXISTS tracks(
@@ -54,8 +56,23 @@ CREATE TABLE IF NOT EXISTS track_data(
   time BLOB NOT NULL,
   importance BLOB NOT NULL,
   segs BLOB NOT NULL,
-  overview BLOB NOT NULL
+  overview BLOB NOT NULL,
+  file_segs BLOB                 -- segment starts without glitch splits; NULL in old catalogs
 );
+CREATE TABLE IF NOT EXISTS waypoints(
+  id INTEGER PRIMARY KEY,
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  idx INTEGER NOT NULL,
+  name TEXT,
+  description TEXT,
+  symbol TEXT,
+  kind TEXT NOT NULL,            -- waypoint | lap
+  lat REAL NOT NULL,
+  lon REAL NOT NULL,
+  ele REAL,
+  time INTEGER
+);
+CREATE INDEX IF NOT EXISTS waypoints_file ON waypoints(file_id);
 CREATE TABLE IF NOT EXISTS tags(
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE COLLATE NOCASE
@@ -81,29 +98,37 @@ pub fn open(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        [table, column],
+        |r| r.get::<_, i64>(0),
+    )? > 0)
+}
+
+fn add_column(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
+    if !has_column(conn, table, column)? {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+    }
+    Ok(())
+}
+
+/// Brings catalogs created by older versions up to the current schema. Fresh catalogs
+/// get every column from `SCHEMA`, so each step only adds what may be missing.
 fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version < 1 {
-        let has_edited: bool =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('tracks') WHERE name = 'edited'", [], |r| r.get(0))?;
-        if !has_edited {
-            conn.execute_batch("ALTER TABLE tracks ADD COLUMN edited INTEGER NOT NULL DEFAULT 0")?;
-        }
-        conn.pragma_update(None, "user_version", 1)?;
+        add_column(conn, "tracks", "edited", "INTEGER NOT NULL DEFAULT 0")?;
     }
     if version < 2 {
-        for col in ["file_activity", "activity"] {
-            let exists: bool = conn.query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('tracks') WHERE name = ?1",
-                [col],
-                |r| r.get(0),
-            )?;
-            if !exists {
-                conn.execute_batch(&format!("ALTER TABLE tracks ADD COLUMN {col} TEXT"))?;
-            }
-        }
-        conn.pragma_update(None, "user_version", 2)?;
+        add_column(conn, "tracks", "file_activity", "TEXT")?;
+        add_column(conn, "tracks", "activity", "TEXT")?;
     }
+    if version < 3 {
+        add_column(conn, "files", "parser_version", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column(conn, "track_data", "file_segs", "BLOB")?;
+    }
+    conn.pragma_update(None, "user_version", 3)?;
     Ok(())
 }
 
@@ -140,11 +165,14 @@ pub fn remove_root(conn: &Connection, id: i64) -> Result<()> {
 pub struct KnownFile {
     pub size: i64,
     pub mtime: i64,
+    pub parser_version: i64,
 }
 
 pub fn known_files(conn: &Connection, root_id: i64) -> Result<HashMap<String, KnownFile>> {
-    let mut st = conn.prepare("SELECT path, size, mtime FROM files WHERE root_id = ?1")?;
-    let rows = st.query_map([root_id], |r| Ok((r.get::<_, String>(0)?, KnownFile { size: r.get(1)?, mtime: r.get(2)? })))?;
+    let mut st = conn.prepare("SELECT path, size, mtime, parser_version FROM files WHERE root_id = ?1")?;
+    let rows = st.query_map([root_id], |r| {
+        Ok((r.get::<_, String>(0)?, KnownFile { size: r.get(1)?, mtime: r.get(2)?, parser_version: r.get(3)? }))
+    })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
@@ -159,10 +187,11 @@ fn now_ms() -> i64 {
 pub fn record_unsupported(conn: &Connection, root_id: i64, path: &str, size: i64, mtime: i64) -> Result<()> {
     let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     conn.execute(
-        "INSERT INTO files(root_id, path, size, mtime, hash, format, status, scanned_at)
-         VALUES (?1, ?2, ?3, ?4, '', ?5, 'unsupported', ?6)
-         ON CONFLICT(path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, missing = 0",
-        params![root_id, path, size, mtime, ext, now_ms()],
+        "INSERT INTO files(root_id, path, size, mtime, hash, format, status, scanned_at, parser_version)
+         VALUES (?1, ?2, ?3, ?4, '', ?5, 'unsupported', ?6, ?7)
+         ON CONFLICT(path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, missing = 0,
+           parser_version = excluded.parser_version",
+        params![root_id, path, size, mtime, ext, now_ms(), PARSER_VERSION],
     )?;
     Ok(())
 }
@@ -176,17 +205,21 @@ pub fn write_import(conn: &mut Connection, root_id: i64, imp: &FileImport) -> Re
         Err(e) => ("error", Some(e.as_str())),
     };
     let file_id: i64 = tx.query_row(
-        "INSERT INTO files(root_id, path, size, mtime, hash, format, status, error, missing, scanned_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)
+        "INSERT INTO files(root_id, path, size, mtime, hash, format, status, error, missing, scanned_at,
+           parser_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10)
          ON CONFLICT(path) DO UPDATE SET root_id = excluded.root_id, size = excluded.size,
            mtime = excluded.mtime, hash = excluded.hash, format = excluded.format,
-           status = excluded.status, error = excluded.error, missing = 0, scanned_at = excluded.scanned_at
+           status = excluded.status, error = excluded.error, missing = 0, scanned_at = excluded.scanned_at,
+           parser_version = excluded.parser_version
          RETURNING id",
-        params![root_id, imp.path, imp.size, imp.mtime, imp.hash, imp.format, status, error, now_ms()],
+        params![root_id, imp.path, imp.size, imp.mtime, imp.hash, imp.format, status, error, now_ms(), PARSER_VERSION],
         |r| r.get(0),
     )?;
 
-    let tracks = imp.result.as_deref().unwrap_or(&[]);
+    let tracks = imp.result.as_ref().map(|f| f.tracks.as_slice()).unwrap_or(&[]);
+    let waypoints = imp.result.as_ref().map(|f| f.waypoints.as_slice()).unwrap_or(&[]);
+    write_waypoints(&tx, file_id, waypoints)?;
     for (idx, t) in tracks.iter().enumerate() {
         let s = &t.stats;
         let bbox = s.bbox.map(|b| b.map(Some)).unwrap_or([None; 4]);
@@ -213,14 +246,61 @@ pub fn write_import(conn: &mut Connection, root_id: i64, imp: &FileImport) -> Re
         let Some(track_id) = track_id else { continue };
         let b = &t.blobs;
         tx.execute(
-            "INSERT OR REPLACE INTO track_data(track_id, coords, ele, time, importance, segs, overview)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview],
+            "INSERT OR REPLACE INTO track_data(track_id, coords, ele, time, importance, segs, overview, file_segs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview, b.file_segs],
         )?;
     }
     tx.execute("DELETE FROM tracks WHERE file_id = ?1 AND idx >= ?2", params![file_id, tracks.len() as i64])?;
     tx.commit()?;
     Ok(())
+}
+
+fn write_waypoints(tx: &rusqlite::Transaction, file_id: i64, waypoints: &[Waypoint]) -> Result<()> {
+    tx.execute("DELETE FROM waypoints WHERE file_id = ?1", [file_id])?;
+    let mut ins = tx.prepare(
+        "INSERT INTO waypoints(file_id, idx, name, description, symbol, kind, lat, lon, ele, time)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?;
+    for (i, w) in waypoints.iter().enumerate() {
+        ins.execute(params![file_id, i as i64, w.name, w.description, w.symbol, w.kind, w.lat, w.lon, w.ele, w.time])?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaypointRow {
+    pub id: i64,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub symbol: Option<String>,
+    pub kind: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub ele: Option<f64>,
+    pub time: Option<i64>,
+}
+
+pub fn list_file_waypoints(conn: &Connection, file_id: i64) -> Result<Vec<WaypointRow>> {
+    let mut st = conn.prepare(
+        "SELECT id, name, description, symbol, kind, lat, lon, ele, time FROM waypoints
+         WHERE file_id = ?1 ORDER BY idx",
+    )?;
+    let rows = st.query_map([file_id], |r| {
+        Ok(WaypointRow {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            description: r.get(2)?,
+            symbol: r.get(3)?,
+            kind: r.get(4)?,
+            lat: r.get(5)?,
+            lon: r.get(6)?,
+            ele: r.get(7)?,
+            time: r.get(8)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// Flags catalogued files that were not found on disk, like Lightroom's "missing" state.
@@ -339,12 +419,15 @@ pub struct TrackData {
     pub ele: Vec<f32>,
     pub time: Vec<i64>,
     pub importance: Vec<f32>,
+    /// Every line break (file segments plus glitch/gap splits); used for drawing.
     pub seg_starts: Vec<u32>,
+    /// The file's own segments (or as edited); the structure shown and edited.
+    pub file_seg_starts: Vec<u32>,
 }
 
 pub fn load_track_data(conn: &Connection, track_id: i64) -> Result<TrackData> {
     Ok(conn.query_row(
-        "SELECT coords, ele, time, importance, segs FROM track_data WHERE track_id = ?1",
+        "SELECT coords, ele, time, importance, segs, COALESCE(file_segs, segs) FROM track_data WHERE track_id = ?1",
         [track_id],
         |r| {
             Ok(TrackData {
@@ -353,6 +436,7 @@ pub fn load_track_data(conn: &Connection, track_id: i64) -> Result<TrackData> {
                 time: codec::decode_i64(&r.get::<_, Vec<u8>>(2)?),
                 importance: codec::decode_f32(&r.get::<_, Vec<u8>>(3)?),
                 seg_starts: codec::decode_u32(&r.get::<_, Vec<u8>>(4)?),
+                file_seg_starts: codec::decode_u32(&r.get::<_, Vec<u8>>(5)?),
             })
         },
     )?)

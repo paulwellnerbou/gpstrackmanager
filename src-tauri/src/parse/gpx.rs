@@ -5,7 +5,7 @@ use chrono::{DateTime, NaiveDateTime};
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
-use crate::model::{ParsedTrack, Points};
+use crate::model::{ParsedFile, ParsedTrack, Points, Waypoint};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Capture {
@@ -15,11 +15,14 @@ enum Capture {
     Type,
     Ele,
     Time,
+    WptName,
+    WptDesc,
+    WptSym,
 }
 
 /// Streaming parse: memory stays proportional to the point count, never to a DOM.
-/// Every `<trk>` and `<rte>` becomes one track.
-pub fn parse(bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
+/// Every `<trk>` and `<rte>` becomes one track; `<wpt>` become waypoints.
+pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
     // Old loggers wrote ISO-8859-1 without declaring it; Latin-1 maps bytes 1:1 to chars.
     let text: Cow<str> = match std::str::from_utf8(bytes) {
         Ok(s) => Cow::Borrowed(s),
@@ -28,7 +31,9 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
     let mut reader = Reader::from_str(&text);
 
     let mut tracks = Vec::new();
+    let mut waypoints = Vec::new();
     let mut current: Option<ParsedTrack> = None;
+    let mut wpt: Option<Waypoint> = None;
     let mut in_point = false;
     let mut pt_lat = f64::NAN;
     let mut pt_lon = f64::NAN;
@@ -62,6 +67,18 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
                     pt_time = None;
                     in_point = true;
                 }
+                "wpt" if current.is_none() => {
+                    wpt = Some(new_waypoint(&e));
+                    pt_ele = None;
+                    pt_time = None;
+                }
+                "name" if wpt.is_some() => begin(&mut capture, &mut buf, Capture::WptName),
+                "desc" | "cmt" if wpt.is_some() => begin(&mut capture, &mut buf, Capture::WptDesc),
+                "sym" if wpt.is_some() => begin(&mut capture, &mut buf, Capture::WptSym),
+                "ele" | "time" if wpt.is_some() => {
+                    let what = if e.local_name().as_ref() == "ele" { Capture::Ele } else { Capture::Time };
+                    begin(&mut capture, &mut buf, what)
+                }
                 "name" if current.is_some() && !in_point => begin(&mut capture, &mut buf, Capture::Name),
                 "desc" if current.is_some() && !in_point => begin(&mut capture, &mut buf, Capture::Desc),
                 "type" if current.is_some() && !in_point => begin(&mut capture, &mut buf, Capture::Type),
@@ -70,7 +87,9 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
                 _ => {}
             },
             Event::Empty(e) => {
-                if matches!(e.local_name().as_ref(), "trkpt" | "rtept") {
+                if e.local_name().as_ref() == "wpt" && current.is_none() {
+                    push_waypoint(&mut waypoints, new_waypoint(&e), None, None);
+                } else if matches!(e.local_name().as_ref(), "trkpt" | "rtept") {
                     if let Some(t) = current.as_mut() {
                         let (lat, lon) = lat_lon(&e);
                         push_point(&mut t.points, lat, lon, None, None);
@@ -99,13 +118,18 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
                         tracks.push(t);
                     }
                 }
+                "wpt" => {
+                    if let Some(w) = wpt.take() {
+                        push_waypoint(&mut waypoints, w, pt_ele, pt_time);
+                    }
+                }
                 "trkpt" | "rtept" if in_point => {
                     in_point = false;
                     if let Some(t) = current.as_mut() {
                         push_point(&mut t.points, pt_lat, pt_lon, pt_ele, pt_time);
                     }
                 }
-                "name" | "desc" | "type" | "ele" | "time" if capture != Capture::None => {
+                "name" | "desc" | "cmt" | "sym" | "type" | "ele" | "time" if capture != Capture::None => {
                     let value = buf.trim();
                     match capture {
                         Capture::Name => set_text(current.as_mut().map(|t| &mut t.name), value),
@@ -117,6 +141,14 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
                         }
                         Capture::Ele => pt_ele = value.parse::<f32>().ok().filter(|v| v.is_finite()),
                         Capture::Time => pt_time = parse_time(value),
+                        Capture::WptName => set_text(wpt.as_mut().map(|w| &mut w.name), value),
+                        Capture::WptDesc => {
+                            // <desc> wins over <cmt>; converters often repeat the name in both.
+                            if let Some(w) = wpt.as_mut().filter(|w| w.description.is_none()) {
+                                set_text(Some(&mut w.description), value);
+                            }
+                        }
+                        Capture::WptSym => set_text(wpt.as_mut().map(|w| &mut w.symbol), value),
                         Capture::None => {}
                     }
                     capture = Capture::None;
@@ -131,7 +163,25 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
     if let Some(t) = current.take() {
         tracks.push(t);
     }
-    Ok(tracks)
+    Ok(ParsedFile { tracks, waypoints })
+}
+
+fn new_waypoint(e: &BytesStart) -> Waypoint {
+    let (lat, lon) = lat_lon(e);
+    Waypoint { name: None, description: None, symbol: None, kind: "waypoint", lat, lon, ele: None, time: None }
+}
+
+fn push_waypoint(out: &mut Vec<Waypoint>, mut w: Waypoint, ele: Option<f32>, time: Option<i64>) {
+    if !(w.lat.is_finite() && w.lon.is_finite() && w.lat.abs() <= 90.0 && w.lon.abs() <= 180.0) {
+        return;
+    }
+    if w.description.as_deref().is_some_and(|d| Some(d) == w.name.as_deref()) {
+        w.description = None;
+    }
+    w.kind = Waypoint::kind_for_name(w.name.as_deref());
+    w.ele = ele;
+    w.time = time;
+    out.push(w);
 }
 
 fn begin(capture: &mut Capture, buf: &mut String, what: Capture) {
@@ -185,7 +235,8 @@ mod tests {
 
     const SAMPLE: &str = r#"<?xml version="1.0"?>
 <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
-  <wpt lat="1" lon="1"><name>ignored waypoint</name></wpt>
+  <wpt lat="1" lon="1"><name>LAP001</name><cmt>LAP001</cmt><desc>LAP001</desc></wpt>
+  <wpt lat="2" lon="3"><ele>12</ele><name><![CDATA[Point 7]]></name><sym>Flag</sym></wpt>
   <trk><name>Morning &amp; walk</name><type>Walking</type><desc><![CDATA[Nice]]></desc>
     <trkseg>
       <trkpt lat="52.5" lon="13.4"><ele>34.5</ele><time>2024-05-15T17:26:38Z</time><name>pt</name></trkpt>
@@ -198,8 +249,13 @@ mod tests {
 
     #[test]
     fn parses_tracks_segments_and_fields() {
-        let tracks = parse(SAMPLE.as_bytes()).unwrap();
+        let file = parse(SAMPLE.as_bytes()).unwrap();
+        let tracks = &file.tracks;
         assert_eq!(tracks.len(), 2);
+        assert_eq!(file.waypoints.len(), 2);
+        assert_eq!((file.waypoints[0].kind, file.waypoints[0].description.as_deref()), ("lap", None));
+        let w = &file.waypoints[1];
+        assert_eq!((w.name.as_deref(), w.symbol.as_deref(), w.ele, w.kind), (Some("Point 7"), Some("Flag"), Some(12.0), "waypoint"));
         let t = &tracks[0];
         assert_eq!(t.name.as_deref(), Some("Morning & walk"));
         assert_eq!(t.description.as_deref(), Some("Nice"));
@@ -217,7 +273,7 @@ mod tests {
     fn tolerates_latin1_and_truncation() {
         let mut bytes = b"<gpx><trk><name>M\xfcnchen</name><trkseg><trkpt lat=\"1\" lon=\"2\"/>".to_vec();
         bytes.extend_from_slice(b"<trkpt lat=\"3\" lon=\"4\">");
-        let tracks = parse(&bytes).unwrap();
+        let tracks = parse(&bytes).unwrap().tracks;
         assert_eq!(tracks[0].name.as_deref(), Some("München"));
         assert_eq!(tracks[0].points.len(), 1);
     }

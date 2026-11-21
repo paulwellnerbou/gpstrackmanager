@@ -371,9 +371,6 @@ main {
   background: var(--accent);
   color: #fff;
 }
-.point-row.seg-start {
-  border-top: 1px dashed var(--muted);
-}
 .point-row .num {
   text-align: right;
 }
@@ -542,4 +539,106 @@ main {
 }
 .activity-icon {
   margin-right: 5px;
+}
+
+.trk-wp {
+  width: 12px;
+  height: 12px;
+  border-radius: 50% 50% 50% 0;
+  background: #1c7ed6;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  cursor: default;
+}
+.trk-wp-lap {
+  border-radius: 3px;
+  background: #7048e8;
+  width: 10px;
+  height: 10px;
+}
+.trk-wp.focused {
+  width: 16px;
+  height: 16px;
+  background: #f08c00;
+}
+
+/* Tree rows: point rows keep the column grid, header rows are a flex line. */
+.tree-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 20px;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: default;
+}
+.tree-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-right: 12px;
+  font-size: 12px;
+}
+.tree-header:hover {
+  background: var(--bg);
+}
+.tree-header .tree-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex-shrink: 1;
+  font-weight: 500;
+}
+.tree-header .muted {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-left: auto;
+  padding-left: 6px;
+  flex-shrink: 0;
+  max-width: 60%;
+}
+.tree-icon {
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.twisty {
+  border: none;
+  background: none;
+  padding: 0;
+  width: 12px;
+  font-size: 10px;
+  color: var(--muted);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.track-row.current .tree-title {
+  color: var(--accent);
+}
+.seg-row,
+.track-row,
+.waypoint-row {
+  cursor: pointer;
+}
+.tree-header.selected {
+  background: var(--accent-soft);
+}
+.point-row.gap-start {
+  border-top: 1px dashed var(--border);
+}
+
+@media (prefers-color-scheme: dark) {
+  .trk-label {
+    background: rgba(40, 38, 36, 0.95);
+    color: #ebe8e3;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  }
+  .trk-mk-selection .trk-label {
+    background: #4a3618;
+  }
+  .trk-pin,
+  .trk-wp {
+    border-color: #1e1d1b;
+  }
 }

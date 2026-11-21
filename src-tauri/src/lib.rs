@@ -111,6 +111,21 @@ fn split_track(state: State<AppState>, id: i64, at: u32) -> CmdResult<i64> {
 }
 
 #[tauri::command]
+fn extract_track_range(state: State<AppState>, id: i64, start: u32, end: u32) -> CmdResult<i64> {
+    edit::extract(&mut state.db.lock().unwrap(), id, start, end).map_err(err)
+}
+
+#[tauri::command]
+fn join_track_segment(state: State<AppState>, id: i64, at: u32) -> CmdResult<()> {
+    edit::join_segment(&mut state.db.lock().unwrap(), id, at).map_err(err)
+}
+
+#[tauri::command]
+fn list_file_waypoints(state: State<AppState>, file_id: i64) -> CmdResult<Vec<catalog::WaypointRow>> {
+    catalog::list_file_waypoints(&state.db.lock().unwrap(), file_id).map_err(err)
+}
+
+#[tauri::command]
 fn revert_file(state: State<AppState>, file_id: i64) -> CmdResult<()> {
     edit::revert_file(&mut state.db.lock().unwrap(), file_id).map_err(err)
 }
@@ -239,6 +254,9 @@ pub fn run() {
             delete_track_points,
             split_track,
             revert_file,
+            extract_track_range,
+            join_track_segment,
+            list_file_waypoints,
             open_in_google_earth,
             open_in_maps,
             reveal_track_file,

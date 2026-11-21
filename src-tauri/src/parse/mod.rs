@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::model::ParsedTrack;
+use crate::model::ParsedFile;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
@@ -40,7 +40,7 @@ pub fn is_known_unsupported(path: &Path) -> bool {
     )
 }
 
-pub fn parse(format: Format, bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
+pub fn parse(format: Format, bytes: &[u8]) -> Result<ParsedFile> {
     match format {
         Format::Gpx => gpx::parse(bytes),
         Format::Fit => fit::parse(bytes),

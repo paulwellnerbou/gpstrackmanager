@@ -6,10 +6,12 @@ import {
   displayName,
   type FileProblem,
   type Line,
+  type MapFocus,
   type PointTable,
   type Root,
   type ScanProgress,
   type TrackSummary,
+  type WaypointRow,
 } from "./api";
 import { DEFAULT_MARKER_OPTIONS, type MarkerOptions } from "./components/trackMarkers";
 import { MarkerMenu } from "./components/MarkerMenu";
@@ -32,9 +34,11 @@ export default function App() {
   const [showAll, setShowAll] = useState(true);
   const [cursor, setCursor] = useState<[number, number] | null>(null);
   const [table, setTable] = useState<PointTable | null>(null);
+  const [waypoints, setWaypoints] = useState<WaypointRow[]>([]);
+  const [focusedWaypoint, setFocusedWaypoint] = useState<number | null>(null);
   const [pointSelection, setPointSelection] = useState<number[]>([]);
   const [markerOptions, setMarkerOptions] = useState<MarkerOptions>(loadMarkerOptions);
-  const [focus, setFocus] = useState<{ bbox: [number, number, number, number]; seq: number } | null>(null);
+  const [focus, setFocus] = useState<MapFocus | null>(null);
   // Bumped after point edits so map, profile and point list reload the track's data.
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -102,6 +106,30 @@ export default function App() {
     };
   }, [selectedId, version]);
 
+  const fileId = selected?.fileId ?? null;
+  useEffect(() => {
+    let cancelled = false;
+    setWaypoints([]);
+    setFocusedWaypoint(null);
+    if (fileId == null) return;
+    api
+      .listFileWaypoints(fileId)
+      .then((w) => !cancelled && setWaypoints(w))
+      .catch((e) => setError(String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId, version]);
+
+  // File order first; parts split off in the catalog (negative idx) after, oldest first.
+  const fileTracks = useMemo(
+    () =>
+      tracks
+        .filter((t) => t.fileId === fileId)
+        .sort((a, b) => (a.idx < 0 ? 1e9 - a.idx : a.idx) - (b.idx < 0 ? 1e9 - b.idx : b.idx)),
+    [tracks, fileId],
+  );
+
   const changeMarkerOptions = (o: MarkerOptions) => {
     setMarkerOptions(o);
     try {
@@ -158,6 +186,8 @@ export default function App() {
           table={table}
           pointSelection={pointSelection}
           markerOptions={markerOptions}
+          waypoints={waypoints}
+          focusedWaypoint={focusedWaypoint}
           focus={focus}
           version={version}
           onSelect={setSelectedId}
@@ -182,9 +212,15 @@ export default function App() {
             patchTrack(selected.id, { activity });
           }}
           table={table}
+          fileTracks={fileTracks}
+          waypoints={waypoints}
+          focusedWaypoint={focusedWaypoint}
+          onSelectTrack={setSelectedId}
+          onFocusWaypoint={setFocusedWaypoint}
           onHover={setCursor}
           onSelectionChange={setPointSelection}
           onZoomTo={(bbox) => setFocus((f) => ({ bbox, seq: (f?.seq ?? 0) + 1 }))}
+          onPanTo={(center) => setFocus((f) => ({ center, seq: (f?.seq ?? 0) + 1 }))}
           onEdited={async () => {
             await reloadCatalog();
             setVersion((v) => v + 1);

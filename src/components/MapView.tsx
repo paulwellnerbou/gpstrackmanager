@@ -3,19 +3,29 @@ import { Map as MapLibreMap, setWorkerUrl, type StyleSpecification, type GeoJSON
 import "maplibre-gl/dist/maplibre-gl.css";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 import type { Feature, GeoJSON as GeoJSONData } from "geojson";
-import { api, type Line, type PointTable, type TrackSummary } from "../api";
+import { api, type Line, type MapFocus, type PointTable, type TrackSummary, type WaypointRow } from "../api";
 import { TrackMarkers, type MarkerOptions } from "./trackMarkers";
+import { useColorScheme } from "../useColorScheme";
 
 // MapLibre locates its worker relative to its own module URL, which Vite's dependency
 // pre-bundling relocates; point it at the real file instead.
 setWorkerUrl(workerUrl);
 
-const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
-const BLANK_STYLE: StyleSpecification = {
+const MAP_STYLES = {
+  light: "https://tiles.openfreemap.org/styles/liberty",
+  dark: "https://tiles.openfreemap.org/styles/dark",
+};
+const blankStyle = (scheme: "light" | "dark"): StyleSpecification => ({
   version: 8,
   sources: {},
-  layers: [{ id: "background", type: "background", paint: { "background-color": "#f3f1ec" } }],
-};
+  layers: [
+    {
+      id: "background",
+      type: "background",
+      paint: { "background-color": scheme === "dark" ? "#1e1d1b" : "#f3f1ec" },
+    },
+  ],
+});
 
 const OWN_SOURCES = ["overview", "detail", "highlight", "cursor"] as const;
 /** Drawing more highlighted points than this adds nothing but load. */
@@ -35,7 +45,10 @@ interface Props {
   /** Selected point indices, ascending. */
   pointSelection: number[];
   markerOptions: MarkerOptions;
-  focus: { bbox: [number, number, number, number]; seq: number } | null;
+  /** Waypoints of the selected track's file. */
+  waypoints: WaypointRow[];
+  focusedWaypoint: number | null;
+  focus: MapFocus | null;
   version: number;
   onSelect: (id: number) => void;
 }
@@ -96,6 +109,8 @@ export function MapView({
   table,
   pointSelection,
   markerOptions,
+  waypoints,
+  focusedWaypoint,
   focus,
   version,
   onSelect,
@@ -107,6 +122,8 @@ export function MapView({
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
   const [ready, setReady] = useState(false);
+  const scheme = useColorScheme();
+  const baseStyle = showBaseMap ? MAP_STYLES[scheme] : blankStyle(scheme);
   const markers = useRef<TrackMarkers | null>(null);
 
   // Detail is re-fetched for every view change: the backend returns only what is
@@ -133,7 +150,7 @@ export function MapView({
   useEffect(() => {
     const map = new MapLibreMap({
       container: container.current!,
-      style: showBaseMap ? MAP_STYLE : BLANK_STYLE,
+      style: baseStyle,
       center: [10, 50],
       zoom: 4,
       attributionControl: { compact: true },
@@ -175,7 +192,7 @@ export function MapView({
     const map = mapRef.current;
     if (!map || !ready) return;
     // transformStyle carries our sources and layers over to the new base style.
-    map.setStyle(showBaseMap ? MAP_STYLE : BLANK_STYLE, {
+    map.setStyle(baseStyle, {
       transformStyle: (prev, next) => {
         if (!prev) return next;
         const own = prev.layers.filter(
@@ -187,7 +204,7 @@ export function MapView({
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showBaseMap]);
+  }, [showBaseMap, scheme]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -256,12 +273,16 @@ export function MapView({
         ? [{ type: "Feature", properties: {}, geometry: { type: "MultiPoint", coordinates: coords } }]
         : [],
     });
-    markers.current?.update(table, pointSelection, markerOptions);
-  }, [table, pointSelection, markerOptions, ready]);
+    markers.current?.update(table, pointSelection, markerOptions, waypoints, focusedWaypoint);
+  }, [table, pointSelection, markerOptions, waypoints, focusedWaypoint, ready]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !focus) return;
+    if ("center" in focus) {
+      map.easeTo({ center: focus.center, duration: 300 });
+      return;
+    }
     const [x0, y0, x1, y1] = focus.bbox;
     map.fitBounds(
       [
