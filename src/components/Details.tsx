@@ -7,6 +7,7 @@ import {
   formatDistance,
   formatDuration,
   type PointTable,
+  type LastEdit,
   type TrackSummary,
   type WaypointRow,
 } from "../api";
@@ -36,9 +37,12 @@ interface Props {
   onPanTo: (lonLat: [number, number]) => void;
   onEdited: () => void;
   onError: (message: string) => void;
+  /** Newest point edit of the track's file, if any. */
+  lastEdit: LastEdit | null;
+  onUndo: () => void;
 }
 
-export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, ...edit }: Props) {
+export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, lastEdit, onUndo, ...edit }: Props) {
   const [title, setTitle] = useState(track.title ?? "");
   const [description, setDescription] = useState(track.description ?? "");
   const [tagInput, setTagInput] = useState("");
@@ -186,9 +190,22 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
             {track.missing && <strong className="missing"> missing</strong>}
           </dd>
         </dl>
-        {track.edited && (
+        {(track.edited || lastEdit) && (
           <div className="edited-note">
             Points edited in the catalog; the file is unchanged.{" "}
+            {lastEdit && (
+              <>
+                <button
+                  className="link"
+                  disabled={edit.locked}
+                  onClick={onUndo}
+                  title={`Undo the newest point edit of this file (⌘Z), from ${formatDate(lastEdit.createdAt)}`}
+                >
+                  Undo {lastEdit.label.charAt(0).toLowerCase() + lastEdit.label.slice(1)}
+                </button>
+                {" · "}
+              </>
+            )}
             <button
               className="link"
               onClick={() =>

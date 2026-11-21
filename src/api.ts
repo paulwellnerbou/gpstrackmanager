@@ -91,6 +91,11 @@ export interface Stay {
   ele: number | null;
 }
 
+export interface LastEdit {
+  label: string;
+  createdAt: number;
+}
+
 export interface ScanProgress {
   rootId: number;
   phase: "listing" | "importing" | "done";
@@ -163,6 +168,10 @@ export const api = {
     invoke<number>("clean_up_track", { id, radiusM, minDurationS }),
   splitTrack: (id: number, at: number) => invoke<number>("split_track", { id, at }),
   revertFile: (fileId: number) => invoke<void>("revert_file", { fileId }),
+  lastEdit: (fileId: number) => invoke<LastEdit | null>("last_edit", { fileId }),
+  /** Undoes the file's newest point edit; `removed` is a split-off part that went away. */
+  undoEdit: (fileId: number) =>
+    invoke<{ restored: number[]; removed: number | null }>("undo_edit", { fileId }),
   extractTrackRange: (id: number, start: number, end: number) =>
     invoke<number>("extract_track_range", { id, start, end }),
   joinTrackSegment: (id: number, at: number) => invoke<void>("join_track_segment", { id, at }),

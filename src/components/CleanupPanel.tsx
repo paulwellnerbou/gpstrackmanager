@@ -49,7 +49,9 @@ function clock(ms: number) {
 export function CleanupPanel(p: Props) {
   const { trackId, table, onSelectionChange, onError } = p;
   const [settings, setSettings] = useState(loadSettings);
-  const [stays, setStays] = useState<Stay[] | null>(null);
+  // The stays and the settings they were found with; only a shown preview can be applied.
+  const [preview, setPreview] = useState<{ radiusM: number; minDurationS: number; stays: Stay[] } | null>(null);
+  const stays = preview?.stays ?? null;
   const { radiusM, minMinutes } = settings;
   const valid = radiusM > 0 && minMinutes > 0;
 
@@ -63,17 +65,16 @@ export function CleanupPanel(p: Props) {
 
   // Waits for the table so the preview selection refers to the indices shown.
   useEffect(() => {
-    if (!table || !valid) {
-      setStays(null);
-      return;
-    }
+    setPreview(null);
+    if (!table || !valid) return;
     let cancelled = false;
+    const minDurationS = minMinutes * 60;
     const timer = setTimeout(() => {
       api
-        .findTrackStays(trackId, radiusM, minMinutes * 60)
+        .findTrackStays(trackId, radiusM, minDurationS)
         .then((s) => {
           if (cancelled) return;
-          setStays(s);
+          setPreview({ radiusM, minDurationS, stays: s });
           onSelectionChange({ set: stayIndices(s), anchor: s[0]?.start ?? null });
         })
         .catch((e) => !cancelled && onError(String(e)));
@@ -87,9 +88,10 @@ export function CleanupPanel(p: Props) {
   const removed = stays?.reduce((n, s) => n + removedBy(s), 0) ?? 0;
 
   const apply = async () => {
+    if (!preview) return;
     p.onBeginEdit();
     try {
-      await api.cleanUpTrack(trackId, radiusM, minMinutes * 60);
+      await api.cleanUpTrack(trackId, preview.radiusM, preview.minDurationS);
       p.onClose();
       p.onEdited();
     } catch (e) {
@@ -97,11 +99,11 @@ export function CleanupPanel(p: Props) {
     }
   };
 
+  // Every stay stays selected: all of them are cleaned up, not just the one in view.
   const zoomTo = (s: Stay) => {
-    if (!table) return;
-    const indices = Array.from({ length: s.end - s.start + 1 }, (_, k) => s.start + k);
-    onSelectionChange({ set: new Set(indices), anchor: s.start });
-    const b = bboxOf(table, indices);
+    if (!table || !stays) return;
+    onSelectionChange({ set: stayIndices(stays), anchor: s.start });
+    const b = bboxOf(table, Array.from({ length: s.end - s.start + 1 }, (_, k) => s.start + k));
     if (b) p.onZoomTo(b);
   };
 
@@ -144,7 +146,7 @@ export function CleanupPanel(p: Props) {
         <ul className="cleanup-stays">
           {stays.map((s) => (
             <li key={s.start}>
-              <button className="link" onClick={() => zoomTo(s)} title="Select and zoom to this stay">
+              <button className="link" onClick={() => zoomTo(s)} title="Zoom to this stay">
                 {clock(table.time[s.start])}–{clock(table.time[s.end])}
               </button>
               <span className="muted">

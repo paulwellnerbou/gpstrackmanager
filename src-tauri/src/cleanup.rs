@@ -12,6 +12,9 @@ const MIN_POINTS_WITHOUT_TIME: usize = 60;
 /// real movement and ends the stay.
 const MAX_EXCURSION_POINTS: usize = 10;
 const MAX_EXCURSION_MS: i64 = 120_000;
+/// After a rejected spot the search skips 1/256 of it: on a 2.4M-point archive this finds
+/// exactly the stays a fix-by-fix search finds.
+const REJECTED_STEP_DIVISOR: usize = 256;
 
 #[derive(Debug, Clone, Copy)]
 pub struct StayOptions {
@@ -44,11 +47,11 @@ pub fn find_stays(coords: &[(f64, f64)], ele: &[f32], time: &[i64], seg_starts: 
         let mut i = s as usize;
         while i + 1 < e {
             match grow(coords, ele, time, i, e, o) {
-                Some(stay) => {
+                Ok(stay) => {
                     i = stay.end as usize + 1;
                     out.push(stay);
                 }
-                None => i += 1,
+                Err(next) => i = next,
             }
         }
     }
@@ -56,8 +59,9 @@ pub fn find_stays(coords: &[(f64, f64)], ele: &[f32], time: &[i64], seg_starts: 
 }
 
 /// The stay starting at `start`, if one does: follows the fixes while they stay within
-/// the radius of the running centre, tolerating short spikes outside.
-fn grow(coords: &[(f64, f64)], ele: &[f32], time: &[i64], start: usize, end: usize, o: StayOptions) -> Option<Stay> {
+/// the radius of the running centre, tolerating short spikes outside. Otherwise returns
+/// where to look next.
+fn grow(coords: &[(f64, f64)], ele: &[f32], time: &[i64], start: usize, end: usize, o: StayOptions) -> Result<Stay, usize> {
     let (mut sum_lat, mut sum_lon, mut count) = (coords[start].0, coords[start].1, 1usize);
     let mut last_in = start;
     for j in start + 1..end {
@@ -76,7 +80,7 @@ fn grow(coords: &[(f64, f64)], ele: &[f32], time: &[i64], start: usize, end: usi
         }
     }
     if count < 3 {
-        return None;
+        return Err(start + 1);
     }
     settle(coords, ele, time, start, last_in, (sum_lat / count as f64, sum_lon / count as f64), o)
 }
@@ -84,6 +88,11 @@ fn grow(coords: &[(f64, f64)], ele: &[f32], time: &[i64], start: usize, end: usi
 /// The running centre lags behind on arrival, so the approach walk is followed into the
 /// stay. Re-centres on the fixes near the provisional centre and trims both ends to the
 /// final spot's radius.
+///
+/// A spot held too briefly is rejected and the search moves on by a small fraction of
+/// it. Retrying from every fix would be quadratic in long stays (25 s for a day-long
+/// stay with a minimum above a day); jumping further misses stays, because a start
+/// closer to the spot drags the centre less and can find a longer one.
 fn settle(
     coords: &[(f64, f64)],
     ele: &[f32],
@@ -92,7 +101,7 @@ fn settle(
     end: usize,
     centre: (f64, f64),
     o: StayOptions,
-) -> Option<Stay> {
+) -> Result<Stay, usize> {
     let near = |c: (f64, f64), i: usize| haversine_m(c.0, c.1, coords[i].0, coords[i].1) <= o.radius_m;
     let (mut sum_lat, mut sum_lon, mut count) = (0f64, 0f64, 0usize);
     let (mut sum_ele, mut ele_count) = (0f64, 0usize);
@@ -106,18 +115,21 @@ fn settle(
         }
     }
     if count < 3 {
-        return None;
+        return Err(start + 1);
     }
     let spot = (sum_lat / count as f64, sum_lon / count as f64);
-    let first = (start..=end).find(|&i| near(spot, i))?;
-    let last = (first..=end).rev().find(|&i| near(spot, i))?;
+    let Some(first) = (start..=end).find(|&i| near(spot, i)) else { return Err(start + 1) };
+    let last = (first..=end).rev().find(|&i| near(spot, i)).unwrap_or(first);
     let timed = time[first] != NO_TIME && time[last] != NO_TIME;
     let long_enough = if timed {
         (time[last] - time[first]) as f64 / 1000.0 >= o.min_duration_s
     } else {
         last - first + 1 >= MIN_POINTS_WITHOUT_TIME
     };
-    (long_enough && last > first + 1).then(|| Stay {
+    if !long_enough || last <= first + 1 {
+        return Err(start + ((last - start) / REJECTED_STEP_DIVISOR).max(1));
+    }
+    Ok(Stay {
         start: first as u32,
         end: last as u32,
         lat: spot.0,
@@ -213,6 +225,27 @@ mod tests {
         let stays = t.stays(OPTS);
         assert_eq!(stays.len(), 2, "{stays:?}");
         assert!((stays[0].end as usize) < away && stays[1].start as usize >= away + 30);
+    }
+
+    #[test]
+    fn a_stay_shorter_than_the_minimum_is_rejected_quickly() {
+        // 30 000 fixes (a bit over 3 days at 10 s) against a 4-day minimum: retrying
+        // every start would take minutes here.
+        let mut t = Track::new();
+        jitter(&mut t, 50.0, 30_000, 10.0);
+        let started = std::time::Instant::now();
+        assert!(t.stays(StayOptions { radius_m: 50.0, min_duration_s: 4.0 * 86_400.0 }).is_empty());
+        assert!(started.elapsed().as_secs() < 5, "took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn without_timestamps_fixes_are_counted() {
+        let mut t = Track::new();
+        jitter(&mut t, 50.0, 80, 10.0);
+        let ele = vec![f32::NAN; t.coords.len()];
+        let no_time = vec![NO_TIME; t.coords.len()];
+        assert_eq!(find_stays(&t.coords, &ele, &no_time, &[0], OPTS).len(), 1);
+        assert!(find_stays(&t.coords[..40], &ele[..40], &no_time[..40], &[0], OPTS).is_empty());
     }
 
     #[test]

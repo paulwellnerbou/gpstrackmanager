@@ -12,6 +12,7 @@ pub mod model;
 pub mod parse;
 pub mod process;
 pub mod scan;
+pub mod undo;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -134,6 +135,16 @@ fn extract_track_range(state: State<AppState>, id: i64, start: u32, end: u32) ->
 #[tauri::command]
 fn join_track_segment(state: State<AppState>, id: i64, at: u32) -> CmdResult<()> {
     edit::join_segment(&mut state.db.lock().unwrap(), id, at).map_err(err)
+}
+
+#[tauri::command]
+fn last_edit(state: State<AppState>, file_id: i64) -> CmdResult<Option<undo::LastEdit>> {
+    undo::last_edit(&state.db.lock().unwrap(), file_id).map_err(err)
+}
+
+#[tauri::command]
+fn undo_edit(state: State<AppState>, file_id: i64) -> CmdResult<undo::UndoResult> {
+    undo::undo(&mut state.db.lock().unwrap(), file_id).map_err(err)
 }
 
 #[tauri::command]
@@ -272,6 +283,8 @@ pub fn run() {
             clean_up_track,
             split_track,
             revert_file,
+            last_edit,
+            undo_edit,
             extract_track_range,
             join_track_segment,
             list_file_waypoints,

@@ -12,6 +12,7 @@ use crate::geo::{bearing_deg, haversine_m};
 use crate::model::{NO_TIME, ParsedTrack, Points};
 use crate::parse::Format;
 use crate::process::{ProcessedTrack, process_file, process_track};
+use crate::undo;
 
 pub const POINT_COLUMNS: usize = 8;
 
@@ -143,7 +144,10 @@ pub fn delete_points(conn: &mut Connection, track_id: i64, indices: &[u32]) -> R
         bail!("A track needs at least two points.");
     }
     let processed = process(subset(&data, &keep));
+    let removed = n - keep.len();
     let tx = catalog::write_tx(conn)?;
+    let label = if removed == 1 { "Delete point".to_string() } else { format!("Delete {removed} points") };
+    undo::record(&tx, &label, &[track_id], None)?;
     write_geometry(&tx, track_id, &processed)?;
     tx.commit()?;
     Ok(())
@@ -170,10 +174,12 @@ pub fn clean_up_stays(conn: &mut Connection, track_id: i64, o: StayOptions) -> R
     }
     let keep: Vec<usize> = (0..n).filter(|&i| !drop[i]).collect();
     let processed = process(subset(&data, &keep));
+    let removed = n - keep.len();
     let tx = catalog::write_tx(conn)?;
+    undo::record(&tx, &format!("Clean up ({removed} points)"), &[track_id], None)?;
     write_geometry(&tx, track_id, &processed)?;
     tx.commit()?;
-    Ok(n - keep.len())
+    Ok(removed)
 }
 
 /// Splits before point `at`; the original keeps `[0, at)`, a new track gets the rest.
@@ -183,12 +189,16 @@ pub fn split(conn: &mut Connection, track_id: i64, at: u32) -> Result<i64> {
     if at == 0 || at >= n {
         bail!("Cannot split at the first or after the last point.");
     }
-    extract(conn, track_id, at, n)
+    extract_as(conn, track_id, at, n, "Split track")
 }
 
 /// Moves points `[start, end)` into a new track (e.g. one segment); the original keeps
 /// the rest. Returns the new track's id.
 pub fn extract(conn: &mut Connection, track_id: i64, start: u32, end: u32) -> Result<i64> {
+    extract_as(conn, track_id, start, end, "Make separate track")
+}
+
+fn extract_as(conn: &mut Connection, track_id: i64, start: u32, end: u32, label: &str) -> Result<i64> {
     let data = catalog::load_track_data(conn, track_id)?;
     let (n, start, end) = (data.coords.len(), start as usize, (end as usize).min(data.coords.len()));
     let rest: Vec<usize> = (0..start).chain(end..n).collect();
@@ -221,6 +231,7 @@ pub fn extract(conn: &mut Connection, track_id: i64, start: u32, end: u32) -> Re
         "INSERT INTO track_tags(track_id, tag_id) SELECT ?2, tag_id FROM track_tags WHERE track_id = ?1",
         params![track_id, new_id],
     )?;
+    undo::record(&tx, label, &[track_id], Some(new_id))?;
     write_geometry(&tx, track_id, &first)?;
     write_geometry(&tx, new_id, &second)?;
     tx.commit()?;
@@ -236,6 +247,7 @@ pub fn join_segment(conn: &mut Connection, track_id: i64, at: u32) -> Result<()>
     data.file_seg_starts.retain(|&s| s != at);
     let processed = process(subset(&data, &(0..data.coords.len()).collect::<Vec<_>>()));
     let tx = catalog::write_tx(conn)?;
+    undo::record(&tx, "Join segments", &[track_id], None)?;
     write_geometry(&tx, track_id, &processed)?;
     tx.commit()?;
     Ok(())
@@ -370,6 +382,53 @@ mod tests {
         assert!(catalog::list_tracks(&conn).unwrap()[0].edited);
         // Nothing left to clean.
         assert_eq!(clean_up_stays(&mut conn, id, o).unwrap(), 0);
+        let file_id = catalog::list_tracks(&conn).unwrap()[0].file_id;
+        assert_eq!(undo::last_edit(&conn, file_id).unwrap().unwrap().label, format!("Clean up ({removed} points)"));
+        undo::undo(&mut conn, file_id).unwrap();
+        let undone = catalog::load_track_data(&conn, id).unwrap();
+        assert_eq!((undone.coords, undone.time), (before.coords, before.time));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edits_are_undone_newest_first() {
+        let dir = std::env::temp_dir().join(format!("gtm-undo-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gpx = dir.join("u.gpx");
+        let pts: String = (0..10)
+            .map(|i| format!(r#"<trkpt lat="50.{i:03}" lon="8.0"><time>2024-01-01T10:00:{i:02}Z</time></trkpt>"#))
+            .collect();
+        std::fs::write(&gpx, format!("<gpx><trk><name>U</name><trkseg>{pts}</trkseg></trk></gpx>")).unwrap();
+
+        let mut conn = catalog::open(&dir.join("c.sqlite")).unwrap();
+        let root = catalog::add_root(&conn, dir.to_str().unwrap()).unwrap();
+        catalog::write_import(&mut conn, root.id, &process_file(&gpx, Format::Gpx)).unwrap();
+        let t = &catalog::list_tracks(&conn).unwrap()[0];
+        let (id, file_id) = (t.id, t.file_id);
+        assert!(undo::last_edit(&conn, file_id).unwrap().is_none());
+
+        let part = split(&mut conn, id, 6).unwrap();
+        delete_points(&mut conn, part, &[0]).unwrap();
+        delete_points(&mut conn, id, &[1, 2]).unwrap();
+        assert_eq!(undo::last_edit(&conn, file_id).unwrap().unwrap().label, "Delete 2 points");
+
+        let r = undo::undo(&mut conn, file_id).unwrap();
+        assert_eq!((r.restored, r.removed), (vec![id], None));
+        assert_eq!(catalog::load_track_data(&conn, id).unwrap().coords.len(), 6);
+        undo::undo(&mut conn, file_id).unwrap();
+        assert_eq!(catalog::load_track_data(&conn, part).unwrap().coords.len(), 4);
+        let r = undo::undo(&mut conn, file_id).unwrap();
+        assert_eq!(r.removed, Some(part));
+        let tracks = catalog::list_tracks(&conn).unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!((tracks[0].point_count, tracks[0].edited), (10, false));
+        assert!(undo::undo(&mut conn, file_id).is_err());
+
+        // Re-reading the file forgets the history: saved points would not match it.
+        delete_points(&mut conn, id, &[0]).unwrap();
+        assert!(undo::last_edit(&conn, file_id).unwrap().is_some());
+        revert_file(&mut conn, file_id).unwrap();
+        assert!(undo::last_edit(&conn, file_id).unwrap().is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
