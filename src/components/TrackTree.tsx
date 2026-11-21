@@ -28,6 +28,7 @@ const OVERSCAN = 10;
  * point numbers, and another track of the same file has its own segments.
  */
 const segKey = (trackId: number, seg: number) => `seg:${trackId}:${seg}`;
+const trackKey = (trackId: number) => `track:${trackId}`;
 
 /** Long waypoint lists start collapsed so the points stay in view. */
 const WAYPOINTS_OPEN_MAX = 20;
@@ -103,6 +104,15 @@ export function TrackTree(p: Props) {
     setCollapsed(new Set());
     wpDefaultedFor.current = null;
   }, [track.fileId]);
+  // A track that becomes current, from here or elsewhere, opens.
+  useEffect(() => {
+    setCollapsed((c) => {
+      if (!c.has(trackKey(track.id))) return c;
+      const next = new Set(c);
+      next.delete(trackKey(track.id));
+      return next;
+    });
+  }, [track.id]);
   useEffect(() => {
     if (!waypoints.length || wpDefaultedFor.current === track.fileId) return;
     wpDefaultedFor.current = track.fileId;
@@ -167,7 +177,7 @@ export function TrackTree(p: Props) {
     const trackList = showTracks ? p.fileTracks : [track];
     for (const t of trackList) {
       if (showTracks) out.push({ kind: "track", depth, track: t });
-      if (t.id !== track.id || !table) continue;
+      if (t.id !== track.id || !table || (showTracks && collapsed.has(trackKey(t.id)))) continue;
       const inner = showTracks ? depth + 1 : depth;
       if (segments.length > 1) {
         segments.forEach(([s, e], k) => {
@@ -232,6 +242,10 @@ export function TrackTree(p: Props) {
     const r = p.reveal;
     const el = box.current;
     if (!r || r.seq === revealed.current || !el) return;
+    if (p.fileTracks.length > 1 && collapsed.has(trackKey(track.id))) {
+      toggle(trackKey(track.id));
+      return;
+    }
     const k = segments.findIndex(([s, e]) => r.index >= s && r.index < e);
     if (segments.length > 1 && k >= 0 && collapsed.has(segKey(track.id, k))) {
       toggle(segKey(track.id, k));
@@ -369,13 +383,30 @@ export function TrackTree(p: Props) {
       case "track": {
         const t = b.track;
         const current = t.id === track.id;
+        const open = current && !collapsed.has(trackKey(t.id));
         const icon = activityOf(t)?.icon ?? "〰";
+        // Another track opens by selecting it; only the current one can be folded. On click,
+        // not mousedown: the selected row becomes current before the click would arrive.
+        const activate = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          if (isSecondaryClick(e)) return;
+          if (!current) return p.onSelectTrack(t.id);
+          // Folded points would stay selected, out of sight but still deletable.
+          if (open) p.onSelectionChange(EMPTY_SELECTION);
+          toggle(trackKey(t.id));
+        };
         return header(
           `t${t.id}`,
           b.depth,
           top,
           <>
-            <span className="twisty">{current ? "▾" : "▸"}</span>
+            <button
+              className="twisty"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={activate}
+            >
+              {open ? "▾" : "▸"}
+            </button>
             <span className="tree-icon">{icon}</span>
             <span className="tree-title">{displayName(t)}</span>
             <span className="muted">
@@ -384,7 +415,7 @@ export function TrackTree(p: Props) {
           </>,
           {
             className: `track-row${current ? " current" : ""}`,
-            onMouseDown: () => !current && p.onSelectTrack(t.id),
+            onClick: activate,
           },
         );
       }
@@ -469,6 +500,8 @@ export function TrackTree(p: Props) {
         onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
         onMouseLeave={() => p.onHover(null)}
         onKeyDown={(e) => {
+          // Keys pressed on an arrow button inside the list are the button's.
+          if (e.target !== e.currentTarget) return;
           if ((e.metaKey || e.ctrlKey) && e.key === "a") {
             e.preventDefault();
             selectRange(0, n);
