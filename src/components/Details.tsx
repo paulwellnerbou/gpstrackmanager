@@ -15,9 +15,8 @@ import {
   type WaypointRow,
 } from "../api";
 import { TrackTree } from "./TrackTree";
-import { CleanupPanel } from "./CleanupPanel";
 import { Collapse } from "../presence";
-import { EMPTY_SELECTION, type PointSelection } from "../pointEditing";
+import type { PointSelection } from "../pointEditing";
 
 interface Props {
   track: TrackSummary;
@@ -52,15 +51,12 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
   const [title, setTitle] = useState(track.title ?? "");
   const [description, setDescription] = useState(track.description ?? "");
   const [tagInput, setTagInput] = useState("");
-  const [cleaningUp, setCleaningUp] = useState(false);
 
   useEffect(() => {
     setTitle(track.title ?? "");
     setDescription(track.description ?? "");
     setTagInput("");
   }, [track.id, track.title, track.description]);
-
-  useEffect(() => setCleaningUp(false), [track.id]);
 
   const save = () => {
     if (title !== (track.title ?? "") || description !== (track.description ?? "")) onSaveMeta(title, description);
@@ -79,32 +75,6 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
   return (
     <aside className="details">
       <div className="details-top">
-        <Collapse show={cleaningUp}>
-          <CleanupPanel
-            trackId={track.id}
-            table={edit.table}
-            locked={edit.locked}
-            onSelectionChange={edit.onSelectionChange}
-            onZoomTo={edit.onZoomTo}
-            onBeginEdit={edit.onBeginEdit}
-            onEdited={edit.onEdited}
-            onError={edit.onError}
-            onClose={() => {
-              setCleaningUp(false);
-              edit.onSelectionChange(EMPTY_SELECTION);
-            }}
-          />
-        </Collapse>
-        <Collapse show={!cleaningUp}>
-          <div className="track-actions">
-            <button
-              onClick={() => setCleaningUp(true)}
-              title="Remove the scatter where the logger lay still, e.g. left on indoors"
-            >
-              Clean up track…
-            </button>
-          </div>
-        </Collapse>
         <label>
           Title
           <input value={title} placeholder={fallbackName} onChange={(e) => setTitle(e.target.value)} onBlur={save} />

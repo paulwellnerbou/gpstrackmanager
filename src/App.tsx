@@ -402,7 +402,9 @@ export default function App() {
       />
       <main>
         <div className="toolbar">
-          <strong>{selected ? displayName(selected) : `${filtered.length} tracks`}</strong>
+          <strong title={selected ? displayName(selected) : undefined}>
+            {selected ? displayName(selected) : `${filtered.length} tracks`}
+          </strong>
           <div className="toggles">
             <MarkerMenu options={markerOptions} onChange={changeMarkerOptions} />
             <MapMenu options={mapOptions} onChange={changeMapOptions} />

@@ -300,6 +300,8 @@ textarea {
 
 main {
   display: grid;
+  /* Without minmax the toolbar's min-content width could widen main past its column. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr 170px;
   min-width: 0;
   min-height: 0;
@@ -309,9 +311,16 @@ main {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
+}
+.toolbar strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .toolbar label {
   display: flex;
@@ -340,6 +349,9 @@ main {
 .map-wrap {
   position: relative;
   min-height: 0;
+  /* The canvas resizes a frame behind its box; unclipped it would paint over the
+     details pane while that slides in. */
+  overflow: hidden;
 }
 .map {
   position: absolute;
@@ -436,12 +448,31 @@ main {
 }
 .points-header {
   display: flex;
-  justify-content: space-between;
-  padding: 8px 12px 4px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 4px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--muted);
+}
+.points-header .muted {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.points-header button {
+  flex-shrink: 0;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 11.5px;
+  padding: 1px 8px;
+}
+.cleanup-slot {
+  padding: 2px 12px 8px;
 }
 .point-cols,
 .point-row {
@@ -1019,10 +1050,6 @@ button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
-}
-.track-actions {
-  display: flex;
-  gap: 6px;
 }
 .cleanup {
   display: flex;

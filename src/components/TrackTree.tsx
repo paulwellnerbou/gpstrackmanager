@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePresence } from "../presence";
+import { Collapse, usePresence } from "../presence";
 import {
   activityOf,
   api,
@@ -21,6 +21,7 @@ import {
   type PointSelection,
 } from "../pointEditing";
 import { MenuBox, PointMenu } from "./PointMenu";
+import { CleanupPanel } from "./CleanupPanel";
 
 const ROW = 20;
 const OVERSCAN = 10;
@@ -98,6 +99,8 @@ export function TrackTree(p: Props) {
   const closeMenu = useCallback(() => setMenu(null), []);
   const { shown: shownMenu, closing: menuClosing } = usePresence(menu);
   const loadingHint = usePresence(!table);
+  const [cleaningUp, setCleaningUp] = useState(false);
+  useEffect(() => setCleaningUp(false), [track.id]);
   const box = useRef<HTMLDivElement>(null);
   const n = table?.length ?? 0;
 
@@ -489,7 +492,33 @@ export function TrackTree(p: Props) {
             ? `${sorted.length.toLocaleString()} of ${n.toLocaleString()} points selected`
             : `${n.toLocaleString()} points`}
         </span>
+        <button
+          disabled={cleaningUp}
+          aria-expanded={cleaningUp}
+          onClick={() => setCleaningUp(true)}
+          title="Remove the scatter where the logger lay still, e.g. left on indoors"
+        >
+          Clean up…
+        </button>
       </div>
+      <Collapse show={cleaningUp}>
+        <div className="cleanup-slot">
+          <CleanupPanel
+            trackId={track.id}
+            table={table}
+            locked={p.locked}
+            onSelectionChange={p.onSelectionChange}
+            onZoomTo={p.onZoomTo}
+            onBeginEdit={p.onBeginEdit}
+            onEdited={p.onEdited}
+            onError={p.onError}
+            onClose={() => {
+              setCleaningUp(false);
+              p.onSelectionChange(EMPTY_SELECTION);
+            }}
+          />
+        </div>
+      </Collapse>
       <div className="point-cols">
         <span className="num">#</span>
         <span>Time</span>
