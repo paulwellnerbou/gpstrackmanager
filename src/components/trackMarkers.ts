@@ -76,6 +76,8 @@ function indexAtDistance(dist: Float64Array, d: number): number {
  */
 export class TrackMarkers {
   private markers: Marker[] = [];
+  /** Kept across renders so a focus change restyles the element and its CSS transition runs. */
+  private waypointMarkers = new Map<number, Marker>();
   private table: PointTable | null = null;
   /** Selected points that get a label; computed per selection, not per map move. */
   private labelPicks: number[] = [];
@@ -141,17 +143,27 @@ export class TrackMarkers {
   }
 
   private waypoint(w: WaypointRow, focused: boolean) {
-    const el = document.createElement("div");
-    el.className = `trk-wp trk-wp-${w.kind}${focused ? " focused" : ""}`;
+    let m = this.waypointMarkers.get(w.id);
+    if (!m) {
+      const div = document.createElement("div");
+      div.className = `trk-wp trk-wp-${w.kind}`;
+      m = new Marker({ element: div, anchor: "center" }).setLngLat([w.lon, w.lat]).addTo(this.map);
+      this.waypointMarkers.set(w.id, m);
+    } else {
+      m.setLngLat([w.lon, w.lat]);
+    }
+    const el = m.getElement();
+    // classList, not className: MapLibre's own positioning classes live on this element.
+    el.classList.toggle("focused", focused);
     const when = w.time != null ? ` · ${new Date(w.time).toLocaleString()}` : "";
     el.title = `${w.name ?? "Waypoint"}${when}${w.description ? `\n${w.description}` : ""}`;
+    el.replaceChildren();
     if (focused) {
       const l = document.createElement("div");
       l.className = "trk-label";
       l.textContent = w.name ?? "Waypoint";
       el.appendChild(l);
     }
-    return el;
   }
 
   render() {
@@ -168,12 +180,19 @@ export class TrackMarkers {
 
     // The focused waypoint is shown even with waypoints switched off: it was picked explicitly.
     let shown = 0;
+    const keep = new Set<number>();
     for (const w of this.waypoints) {
       const focused = w.id === this.focusedWaypoint;
       if (!focused && (!o.waypoints || shown >= MAX_WAYPOINTS)) continue;
       if (!visible(w.lon, w.lat)) continue;
-      this.add(this.waypoint(w, focused), w.lon, w.lat);
+      this.waypoint(w, focused);
+      keep.add(w.id);
       shown++;
+    }
+    for (const [id, m] of this.waypointMarkers) {
+      if (keep.has(id)) continue;
+      m.remove();
+      this.waypointMarkers.delete(id);
     }
 
     const t = this.table;

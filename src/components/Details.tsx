@@ -78,17 +78,6 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
   return (
     <aside className="details">
       <div className="details-top">
-        <div className="open-in">
-          <button onClick={() => call(() => api.openInGoogleEarth(track.id))} title="Export as KML and open it">
-            Google Earth
-          </button>
-          <button onClick={() => call(() => api.openInMaps(track.id))} title="Open the track's area in Maps">
-            Maps
-          </button>
-          <button onClick={() => call(() => api.revealTrackFile(track.id))} title="Show the source file in Finder">
-            Show file
-          </button>
-        </div>
         {cleaningUp ? (
           <CleanupPanel
             trackId={track.id}
@@ -235,6 +224,17 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
             </button>
           </div>
         )}
+      </div>
+      <div className="open-in">
+        <button onClick={() => call(() => api.openInGoogleEarth(track.id))} title="Export as KML and open it">
+          Google Earth
+        </button>
+        <button onClick={() => call(() => api.openInMaps(track.id))} title="Open the track's area in Maps">
+          Maps
+        </button>
+        <button onClick={() => call(() => api.revealTrackFile(track.id))} title="Show the source file in Finder">
+          Show file
+        </button>
       </div>
       <TrackTree track={track} {...edit} />
     </aside>

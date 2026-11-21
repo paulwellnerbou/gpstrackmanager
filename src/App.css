@@ -10,6 +10,7 @@
   --accent-soft: #fbe4ec;
   --tag: #ece8f7;
   --tag-text: #4b3a87;
+  --fade: 140ms ease-out;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-size: 13px;
   color: var(--text);
@@ -112,7 +113,7 @@ textarea {
   width: 3px;
   background: var(--accent);
   opacity: 0;
-  transition: opacity 0.12s;
+  transition: opacity var(--fade);
 }
 .pane-resizer.left::after {
   left: 0;
@@ -208,9 +209,12 @@ textarea {
   overflow-y: auto;
   flex: 1;
 }
-.track-list:focus-visible {
-  outline: 2px solid var(--accent);
+.track-list {
+  outline: 2px solid transparent;
   outline-offset: -2px;
+}
+.track-list:focus-visible {
+  outline-color: var(--accent);
 }
 .list-row {
   position: absolute;
@@ -398,6 +402,8 @@ main {
 .open-in {
   display: flex;
   gap: 6px;
+  padding: 0 12px 12px;
+  flex-shrink: 0;
 }
 .open-in button {
   flex: 1;
@@ -854,6 +860,38 @@ main {
   cursor: default;
 }
 
+/* Paint properties only: row positions and map marker transforms must stay instant. */
+button,
+input,
+textarea,
+select,
+.list-row,
+.tree-row,
+.geo-search-results li,
+.track-row .tree-title {
+  transition:
+    background-color var(--fade),
+    border-color var(--fade),
+    color var(--fade),
+    opacity var(--fade),
+    box-shadow var(--fade);
+}
+.track-list {
+  transition: outline-color var(--fade);
+}
+/* Repeats MapLibre's own marker opacity fade, which this declaration would override. */
+.trk-wp {
+  transition:
+    opacity 0.2s,
+    width var(--fade),
+    height var(--fade),
+    background-color var(--fade);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --fade: 0s;
+  }
+}
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
