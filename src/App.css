@@ -295,6 +295,9 @@ textarea {
 main {
   display: grid;
   grid-template-rows: auto 1fr 170px;
+  /* An auto column would grow to the profile plot's pixel width and never shrink back,
+     holding the map wide when the column narrows. */
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   position: relative;
@@ -306,22 +309,42 @@ main {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
+  gap: 12px;
+}
+.toolbar > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .toolbar label {
   display: flex;
   gap: 6px;
   align-items: center;
 }
+/* Not on .toggles itself: the dropdown panels inside would inherit it and stop wrapping. */
+.toolbar label,
+.toolbar .marker-menu > button {
+  white-space: nowrap;
+}
 .toolbar .toggles {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 16px;
+  /* The title ellipsizes first; the toggles wrap only once they alone overflow. */
+  flex-shrink: 0;
+  max-width: 100%;
 }
 .toolbar input {
   width: auto;
 }
 .error {
   position: absolute;
-  top: 44px;
+  /* Anchored to the map row so a toolbar wrapped onto two lines stays uncovered. */
+  grid-row: 2;
+  grid-column: 1;
+  top: 4px;
   left: 12px;
   right: 12px;
   z-index: 10;
