@@ -91,7 +91,11 @@ pub fn scan_root(db_path: &Path, root_id: i64, on_progress: &(dyn Fn(&ScanProgre
                 Ok(file) => progress.tracks += file.tracks.len(),
                 Err(_) => progress.errors += 1,
             }
-            catalog::write_import(&mut conn, root_id, &imp)?;
+            // One file that cannot be written (e.g. database busy) must not end the whole scan.
+            if let Err(e) = catalog::write_import(&mut conn, root_id, &imp) {
+                eprintln!("cannot catalog {}: {e:#}", imp.path);
+                progress.errors += 1;
+            }
             progress.done += 1;
             progress.current = Some(imp.path);
             progress.elapsed_ms = started.elapsed().as_millis();

@@ -24,6 +24,7 @@ interface Props {
   onRootsChanged: () => void;
   onScan: (rootId: number) => void;
   onImported: () => void;
+  onError: (message: string) => void;
 }
 
 export function Sidebar(p: Props) {
@@ -41,9 +42,13 @@ export function Sidebar(p: Props) {
   const addFolder = async () => {
     const dir = await open({ directory: true, title: "Add a folder to the library" });
     if (typeof dir !== "string") return;
-    const root = await api.addRoot(dir);
-    p.onRootsChanged();
-    p.onScan(root.id);
+    try {
+      const root = await api.addRoot(dir);
+      p.onRootsChanged();
+      p.onScan(root.id);
+    } catch (e) {
+      p.onError(String(e));
+    }
   };
 
   const checkDevices = async () => {
@@ -56,10 +61,16 @@ export function Sidebar(p: Props) {
 
   const importPicked = async () => {
     if (!p.roots.length) return setDeviceMsg("Add a library folder first.");
-    const res = await api.importDeviceFiles(p.roots[0].id, [...picked]);
+    let res;
+    try {
+      res = await api.importDeviceFiles(p.roots[0].id, [...picked]);
+    } catch (e) {
+      return setDeviceMsg(String(e));
+    }
     setDeviceMsg(
       `Imported ${res.copied.length} file(s) into ${p.roots[0].path}` +
-        (res.skipped ? `, ${res.skipped} already known` : ""),
+        (res.skipped ? `, ${res.skipped} already known` : "") +
+        (res.failed.length ? `. Failed: ${res.failed.join("; ")}` : ""),
     );
     await checkDevices();
     p.onImported();

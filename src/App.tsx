@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   activityOf,
@@ -74,7 +74,8 @@ export default function App() {
     const unlisten = [
       listen<ScanProgress>("scan-progress", (e) => {
         setScan(e.payload);
-        if (e.payload.phase === "done") reloadCatalog();
+        // A rescan may have replaced the selected track's points and waypoints.
+        if (e.payload.phase === "done") reloadCatalog().then(() => setVersion((v) => v + 1));
       }),
       listen<string>("scan-error", (e) => setError(e.payload)),
     ];
@@ -98,6 +99,23 @@ export default function App() {
 
   const selected = tracks.find((t) => t.id === selectedId) ?? null;
 
+  // The selected track can disappear: a reverted split-off part, or a file a rescan removed.
+  useEffect(() => {
+    if (selectedId != null && !tracks.some((t) => t.id === selectedId)) setSelectedId(null);
+  }, [tracks, selectedId]);
+
+  // While an edit is applied, the shown point indices are about to change; the tree and
+  // the map refuse further edits until the new point table has arrived.
+  const [editPending, setEditPending] = useState(false);
+  const beginEdit = useCallback(() => {
+    setSelection(EMPTY_SELECTION);
+    setEditPending(true);
+  }, []);
+  const editFailed = useCallback((message: string) => {
+    setError(message);
+    setEditPending(false);
+  }, []);
+
   // Indices refer to one version of one track; a new point table invalidates them.
   useEffect(() => setSelection(EMPTY_SELECTION), [table]);
 
@@ -108,14 +126,30 @@ export default function App() {
   };
 
   // One copy of the selected track's points, shared by the point list and the map markers.
+  // After an edit the same track's old table stays up until the new one arrives, which
+  // keeps the tree's scroll position; edits are locked meanwhile.
+  const tableFor = useRef<number | null>(null);
   useEffect(() => {
     let cancelled = false;
-    setTable(null);
-    if (selectedId == null) return;
+    if (tableFor.current !== selectedId) setTable(null);
+    if (selectedId == null) {
+      tableFor.current = null;
+      setEditPending(false);
+      return;
+    }
     api
       .pointTable(selectedId)
-      .then((t) => !cancelled && setTable(t))
-      .catch((e) => setError(String(e)));
+      .then((t) => {
+        if (cancelled) return;
+        tableFor.current = selectedId;
+        setTable(t);
+        setEditPending(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(String(e));
+        setEditPending(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -176,6 +210,7 @@ export default function App() {
         onRootsChanged={reloadRoots}
         onScan={(id) => api.scanRoot(id).catch((e) => setError(String(e)))}
         onImported={reloadCatalog}
+        onError={setError}
       />
       <main>
         <div className="toolbar">
@@ -214,7 +249,8 @@ export default function App() {
           pointView={markerOptions.pointView}
           selection={selection}
           onPointSelection={selectOnMap}
-          onPointMenu={(x, y) => setMapMenu({ x, y })}
+          onPointMenu={(x, y) => !editPending && setMapMenu({ x, y })}
+          locked={editPending}
         />
         {mapMenu && selected && table && (
           <PointMenu
@@ -225,8 +261,9 @@ export default function App() {
             selection={pointSelection}
             onClose={closeMapMenu}
             onZoomTo={(bbox) => setFocus((f) => ({ bbox, seq: (f?.seq ?? 0) + 1 }))}
+            onBeginEdit={beginEdit}
             onEdited={onEdited}
-            onError={setError}
+            onError={editFailed}
           />
         )}
         <Profile track={selected} version={version} onCursor={setCursor} />
@@ -260,8 +297,10 @@ export default function App() {
           reveal={reveal}
           onZoomTo={(bbox) => setFocus((f) => ({ bbox, seq: (f?.seq ?? 0) + 1 }))}
           onPanTo={(center) => setFocus((f) => ({ center, seq: (f?.seq ?? 0) + 1 }))}
+          locked={editPending}
+          onBeginEdit={beginEdit}
           onEdited={onEdited}
-          onError={setError}
+          onError={editFailed}
         />
       )}
     </div>

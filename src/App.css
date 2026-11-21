@@ -284,6 +284,10 @@ main {
   pointer-events: none;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
 }
+.map-hint-bottom {
+  top: auto;
+  bottom: 28px;
+}
 .box-select {
   position: absolute;
   border: 1.5px solid var(--accent);

@@ -144,7 +144,7 @@ export const api = {
   setTrackActivity: (id: number, activity: string | null) => invoke<void>("set_track_activity", { id, activity }),
   listGpsDevices: () => invoke<GpsDevice[]>("list_gps_devices"),
   importDeviceFiles: (rootId: number, files: string[]) =>
-    invoke<{ copied: string[]; skipped: number }>("import_device_files", { rootId, files }),
+    invoke<{ copied: string[]; skipped: number; failed: string[] }>("import_device_files", { rootId, files }),
 
   deleteTrackPoints: (id: number, indices: number[]) => invoke<void>("delete_track_points", { id, indices }),
   splitTrack: (id: number, at: number) => invoke<number>("split_track", { id, at }),
