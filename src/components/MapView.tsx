@@ -8,17 +8,22 @@ import { TrackMarkers, type MarkerOptions } from "./trackMarkers";
 import { useColorScheme } from "../useColorScheme";
 import { clickSelection, isToggleKey, type PointSelection } from "../pointEditing";
 import { GeoSearch } from "./GeoSearch";
+import { TRACK_COLORS, type MapOptions, type TrackColor } from "./MapMenu";
 import { installBoxSelect, pointAt, pointsInRect, updateDots, type PointView } from "./mapPoints";
 
 // MapLibre locates its worker relative to its own module URL, which Vite's dependency
 // pre-bundling relocates; point it at the real file instead.
 setWorkerUrl(workerUrl);
 
-const MAP_STYLES = {
+type BaseStyle = "light" | "dark" | "black";
+type Brightness = "light" | "dark";
+
+const MAP_STYLES: Record<BaseStyle, string> = {
   light: "https://tiles.openfreemap.org/styles/liberty",
-  dark: "https://tiles.openfreemap.org/styles/dark",
+  dark: "https://tiles.openfreemap.org/styles/fiord",
+  black: "https://tiles.openfreemap.org/styles/dark",
 };
-const blankStyle = (scheme: "light" | "dark"): StyleSpecification => ({
+const blankStyle = (scheme: Brightness): StyleSpecification => ({
   version: 8,
   sources: {},
   layers: [
@@ -33,14 +38,27 @@ const blankStyle = (scheme: "light" | "dark"): StyleSpecification => ({
 const OWN_SOURCES = ["overview", "detail", "dots", "highlight", "cursor"] as const;
 /** Drawing more highlighted points than this adds nothing but load. */
 const MAX_HIGHLIGHT = 5000;
-const OVERVIEW_COLOR = "#7a5cc4";
-const OVERVIEW_DIMMED = "#9c97a8";
+
+/** Paint that depends on how bright the base map is. */
+function trackPaint(brightness: Brightness, color: TrackColor, dimmed: boolean) {
+  const dark = brightness === "dark";
+  return {
+    overview: TRACK_COLORS[color][brightness],
+    // Dimmed tracks keep their hue so they stay findable next to the selected one.
+    overviewOpacity: dimmed ? (dark ? 0.55 : 0.4) : dark ? 0.9 : 0.7,
+    overviewWidth: dark ? 2 : 1.75,
+    detail: dark ? "#ff6b9a" : "#d6336c",
+    // A white halo glares on a dark map; a dark one separates the line just as well.
+    casing: dark ? "#14131a" : "#ffffff",
+  };
+}
 
 interface Props {
   tracks: TrackSummary[];
   overview: Map<number, Line[]>;
   selected: TrackSummary | null;
   showBaseMap: boolean;
+  mapOptions: MapOptions;
   showAll: boolean;
   cursor: [number, number] | null;
   /** Point table of the selected track, for markers and highlighted points. */
@@ -68,7 +86,7 @@ function multiLine(lines: Line[], id?: number): Feature {
   return { type: "Feature", id, properties: {}, geometry: { type: "MultiLineString", coordinates: lines } };
 }
 
-function addOwnLayers(map: MapLibreMap) {
+function addOwnLayers(map: MapLibreMap, paint: ReturnType<typeof trackPaint>) {
   for (const id of OWN_SOURCES) {
     if (!map.getSource(id)) map.addSource(id, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   }
@@ -76,21 +94,21 @@ function addOwnLayers(map: MapLibreMap) {
     id: "overview",
     type: "line",
     source: "overview",
-    paint: { "line-color": OVERVIEW_COLOR, "line-width": 1.5, "line-opacity": 0.55 },
+    paint: { "line-color": paint.overview, "line-width": paint.overviewWidth, "line-opacity": paint.overviewOpacity },
   });
   map.addLayer({
     id: "detail-casing",
     type: "line",
     source: "detail",
     layout: { "line-join": "round", "line-cap": "round" },
-    paint: { "line-color": "#ffffff", "line-width": 8 },
+    paint: { "line-color": paint.casing, "line-width": 8 },
   });
   map.addLayer({
     id: "detail",
     type: "line",
     source: "detail",
     layout: { "line-join": "round", "line-cap": "round" },
-    paint: { "line-color": "#d6336c", "line-width": 4 },
+    paint: { "line-color": paint.detail, "line-width": 4 },
   });
   map.addLayer({
     id: "dots",
@@ -148,6 +166,7 @@ export function MapView({
   overview,
   selected,
   showBaseMap,
+  mapOptions,
   showAll,
   cursor,
   table,
@@ -171,7 +190,13 @@ export function MapView({
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
   const [ready, setReady] = useState(false);
-  const scheme = useColorScheme();
+  const systemScheme = useColorScheme();
+  const baseStyle: BaseStyle =
+    mapOptions.theme === "auto" ? (systemScheme === "dark" ? "dark" : "light") : mapOptions.theme;
+  const brightness: Brightness = baseStyle === "light" ? "light" : "dark";
+  const paint = trackPaint(brightness, mapOptions.trackColor, selected != null);
+  const paintRef = useRef(paint);
+  paintRef.current = paint;
   const [baseMapFailed, setBaseMapFailed] = useState(false);
   const markers = useRef<TrackMarkers | null>(null);
   const [tooManyDots, setTooManyDots] = useState<number | null>(null);
@@ -209,14 +234,14 @@ export function MapView({
       container: container.current!,
       // Start with the local style so our layers exist even without network; the base map
       // is loaded on top once its style could be fetched.
-      style: blankStyle(scheme),
+      style: blankStyle(brightness),
       center: [10, 50],
       zoom: 4,
       attributionControl: { compact: true },
     });
     mapRef.current = map;
     map.on("load", () => {
-      addOwnLayers(map);
+      addOwnLayers(map, paintRef.current);
       markers.current = new TrackMarkers(map);
       setReady(true);
       refreshDetail.current();
@@ -301,13 +326,13 @@ export function MapView({
         },
       });
     if (!showBaseMap) {
-      apply(blankStyle(scheme));
+      apply(blankStyle(brightness));
       setBaseMapFailed(false);
       return;
     }
     // Fetched here rather than by MapLibre so that, offline, the map keeps working on the
     // local style instead of ending up with no style at all.
-    fetchStyle(MAP_STYLES[scheme])
+    fetchStyle(MAP_STYLES[baseStyle])
       .then((style) => {
         if (cancelled) return;
         apply(style);
@@ -315,13 +340,13 @@ export function MapView({
       })
       .catch(() => {
         if (cancelled) return;
-        apply(blankStyle(scheme));
+        apply(blankStyle(brightness));
         setBaseMapFailed(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [showBaseMap, scheme, ready]);
+  }, [showBaseMap, baseStyle, brightness, ready]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -339,10 +364,13 @@ export function MapView({
     const map = mapRef.current;
     if (!map || !ready) return;
     whenStyleReady(map, () => {
-      map.setPaintProperty("overview", "line-color", selected ? OVERVIEW_DIMMED : OVERVIEW_COLOR);
-      map.setPaintProperty("overview", "line-opacity", selected ? 0.35 : 0.55);
+      map.setPaintProperty("overview", "line-color", paint.overview);
+      map.setPaintProperty("overview", "line-opacity", paint.overviewOpacity);
+      map.setPaintProperty("overview", "line-width", paint.overviewWidth);
+      map.setPaintProperty("detail", "line-color", paint.detail);
+      map.setPaintProperty("detail-casing", "line-color", paint.casing);
     });
-  }, [selected?.id, ready]);
+  }, [paint.overview, paint.overviewOpacity, paint.overviewWidth, paint.detail, paint.casing, ready]);
 
   useEffect(() => {
     selectedRef.current = selected;

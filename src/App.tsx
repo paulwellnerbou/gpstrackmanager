@@ -15,6 +15,7 @@ import {
 } from "./api";
 import { DEFAULT_MARKER_OPTIONS, type MarkerOptions } from "./components/trackMarkers";
 import { MarkerMenu } from "./components/MarkerMenu";
+import { DEFAULT_MAP_OPTIONS, MapMenu, TRACK_COLORS, type MapOptions } from "./components/MapMenu";
 import { PointMenu } from "./components/PointMenu";
 import { EMPTY_SELECTION, type PointSelection } from "./pointEditing";
 import { Sidebar } from "./components/Sidebar";
@@ -44,6 +45,7 @@ export default function App() {
   const closeMapMenu = useCallback(() => setMapMenu(null), []);
   const pointSelection = useMemo(() => [...selection.set].sort((a, b) => a - b), [selection]);
   const [markerOptions, setMarkerOptions] = useState<MarkerOptions>(loadMarkerOptions);
+  const [mapOptions, setMapOptions] = useState<MapOptions>(loadMapOptions);
   const [focus, setFocus] = useState<MapFocus | null>(null);
   // Bumped after point edits so map, profile and point list reload the track's data.
   const [version, setVersion] = useState(0);
@@ -191,11 +193,12 @@ export default function App() {
 
   const changeMarkerOptions = (o: MarkerOptions) => {
     setMarkerOptions(o);
-    try {
-      localStorage.setItem(MARKER_OPTIONS_KEY, JSON.stringify(o));
-    } catch {
-      // Preferences are a convenience; without storage they just reset on restart.
-    }
+    savePrefs(MARKER_OPTIONS_KEY, o);
+  };
+
+  const changeMapOptions = (o: MapOptions) => {
+    setMapOptions(o);
+    savePrefs(MAP_OPTIONS_KEY, o);
   };
 
   const patchTrack = (id: number, patch: Partial<TrackSummary>) =>
@@ -222,6 +225,7 @@ export default function App() {
           <strong>{selected ? displayName(selected) : `${filtered.length} tracks`}</strong>
           <div className="toggles">
             <MarkerMenu options={markerOptions} onChange={changeMarkerOptions} />
+            <MapMenu options={mapOptions} onChange={changeMapOptions} />
             <label title="Show every track in the list (search narrows it down)">
               <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> All tracks
             </label>
@@ -241,6 +245,7 @@ export default function App() {
           overview={overview}
           selected={selected}
           showBaseMap={showBaseMap}
+          mapOptions={mapOptions}
           showAll={showAll}
           cursor={cursor}
           table={table}
@@ -313,6 +318,31 @@ export default function App() {
 }
 
 const MARKER_OPTIONS_KEY = "markerOptions";
+const MAP_OPTIONS_KEY = "mapOptions";
+
+function savePrefs(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Preferences are a convenience; without storage they just reset on restart.
+  }
+}
+
+function loadMapOptions(): MapOptions {
+  try {
+    const raw = localStorage.getItem(MAP_OPTIONS_KEY);
+    if (raw) {
+      const o: MapOptions = { ...DEFAULT_MAP_OPTIONS, ...JSON.parse(raw) };
+      // Unknown stored values would break the style lookup or line paint.
+      if (!(o.trackColor in TRACK_COLORS)) o.trackColor = DEFAULT_MAP_OPTIONS.trackColor;
+      if (!["auto", "light", "dark", "black"].includes(o.theme)) o.theme = DEFAULT_MAP_OPTIONS.theme;
+      return o;
+    }
+  } catch {
+    // Fall through to defaults.
+  }
+  return DEFAULT_MAP_OPTIONS;
+}
 
 function loadMarkerOptions(): MarkerOptions {
   try {

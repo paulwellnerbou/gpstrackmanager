@@ -700,6 +700,22 @@ main {
   background: var(--accent);
   color: #fff;
 }
+.swatches {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0 4px;
+}
+.swatch {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+}
+.swatch.active {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--panel) inset;
+}
 .geo-search {
   position: absolute;
   top: 10px;
