@@ -94,6 +94,8 @@ export interface Stay {
 export interface LastEdit {
   label: string;
   createdAt: number;
+  /** The track the edit changed, not necessarily the one shown. */
+  trackId: number;
 }
 
 export interface ScanProgress {

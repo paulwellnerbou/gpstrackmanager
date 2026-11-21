@@ -22,6 +22,8 @@ const DATA_COLUMNS: &str = "coords, ele, time, importance, segs, overview, file_
 pub struct LastEdit {
     pub label: String,
     pub created_at: i64,
+    /// The track the edit changed; with several tracks in a file it may not be the one shown.
+    pub track_id: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,9 +83,10 @@ pub fn clear_file(tx: &Transaction, file_id: i64) -> Result<()> {
 pub fn last_edit(conn: &Connection, file_id: i64) -> Result<Option<LastEdit>> {
     Ok(conn
         .query_row(
-            "SELECT label, created_at FROM edit_undo WHERE file_id = ?1 ORDER BY id DESC LIMIT 1",
+            "SELECT e.label, e.created_at, (SELECT MIN(track_id) FROM edit_undo_tracks WHERE undo_id = e.id)
+             FROM edit_undo e WHERE e.file_id = ?1 ORDER BY e.id DESC LIMIT 1",
             [file_id],
-            |r| Ok(LastEdit { label: r.get(0)?, created_at: r.get(1)? }),
+            |r| Ok(LastEdit { label: r.get(0)?, created_at: r.get(1)?, track_id: r.get(2)? }),
         )
         .optional()?)
 }

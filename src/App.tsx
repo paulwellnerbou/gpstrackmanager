@@ -199,13 +199,19 @@ export default function App() {
     setVersion((v) => v + 1);
   };
 
+  const lastEditTrack =
+    lastEdit && lastEdit.trackId !== selectedId ? (tracks.find((t) => t.id === lastEdit.trackId) ?? null) : null;
+
   const undo = async () => {
     if (fileId == null || !lastEdit || editPending) return;
     beginEdit();
     try {
       const r = await api.undoEdit(fileId);
-      // Undoing a split removes the part; show the track it came from instead.
-      if (r.removed != null && r.removed === selectedId && r.restored.length) setSelectedId(r.restored[0]);
+      // Show the track that changed: another track of the file, or the one a removed
+      // split-off part came from.
+      if (selectedId != null && r.restored.length && !r.restored.includes(selectedId)) {
+        setSelectedId(r.restored[0]);
+      }
       await onEdited();
     } catch (e) {
       editFailed(String(e));
@@ -345,6 +351,7 @@ export default function App() {
           onEdited={onEdited}
           onError={editFailed}
           lastEdit={lastEdit}
+          lastEditTrack={lastEditTrack}
           onUndo={undo}
         />
       )}

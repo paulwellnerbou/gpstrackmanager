@@ -90,7 +90,7 @@ fn grow(coords: &[(f64, f64)], ele: &[f32], time: &[i64], start: usize, end: usi
 /// final spot's radius.
 ///
 /// A spot held too briefly is rejected and the search moves on by a small fraction of
-/// it. Retrying from every fix would be quadratic in long stays (25 s for a day-long
+/// the stretch scanned for it. Retrying from every fix would be quadratic in long stays (25 s for a day-long
 /// stay with a minimum above a day); jumping further misses stays, because a start
 /// closer to the spot drags the centre less and can find a longer one.
 fn settle(
@@ -127,7 +127,7 @@ fn settle(
         last - first + 1 >= MIN_POINTS_WITHOUT_TIME
     };
     if !long_enough || last <= first + 1 {
-        return Err(start + ((last - start) / REJECTED_STEP_DIVISOR).max(1));
+        return Err(start + ((end - start) / REJECTED_STEP_DIVISOR).max(1));
     }
     Ok(Stay {
         start: first as u32,

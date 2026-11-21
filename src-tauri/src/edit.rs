@@ -410,11 +410,13 @@ mod tests {
         let part = split(&mut conn, id, 6).unwrap();
         delete_points(&mut conn, part, &[0]).unwrap();
         delete_points(&mut conn, id, &[1, 2]).unwrap();
-        assert_eq!(undo::last_edit(&conn, file_id).unwrap().unwrap().label, "Delete 2 points");
+        let last = undo::last_edit(&conn, file_id).unwrap().unwrap();
+        assert_eq!((last.label.as_str(), last.track_id), ("Delete 2 points", id));
 
         let r = undo::undo(&mut conn, file_id).unwrap();
         assert_eq!((r.restored, r.removed), (vec![id], None));
         assert_eq!(catalog::load_track_data(&conn, id).unwrap().coords.len(), 6);
+        assert_eq!(undo::last_edit(&conn, file_id).unwrap().unwrap().track_id, part);
         undo::undo(&mut conn, file_id).unwrap();
         assert_eq!(catalog::load_track_data(&conn, part).unwrap().coords.len(), 4);
         let r = undo::undo(&mut conn, file_id).unwrap();

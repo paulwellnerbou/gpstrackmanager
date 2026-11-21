@@ -39,10 +39,12 @@ interface Props {
   onError: (message: string) => void;
   /** Newest point edit of the track's file, if any. */
   lastEdit: LastEdit | null;
+  /** The track the newest edit changed, when it is not this one. */
+  lastEditTrack: TrackSummary | null;
   onUndo: () => void;
 }
 
-export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, lastEdit, onUndo, ...edit }: Props) {
+export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, lastEdit, lastEditTrack, onUndo, ...edit }: Props) {
   const [title, setTitle] = useState(track.title ?? "");
   const [description, setDescription] = useState(track.description ?? "");
   const [tagInput, setTagInput] = useState("");
@@ -202,6 +204,7 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
                   title={`Undo the newest point edit of this file (⌘Z), from ${formatDate(lastEdit.createdAt)}`}
                 >
                   Undo {lastEdit.label.charAt(0).toLowerCase() + lastEdit.label.slice(1)}
+                  {lastEditTrack && ` in “${displayName(lastEditTrack)}”`}
                 </button>
                 {" · "}
               </>
