@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { usePresence } from "../presence";
 
 export type MapTheme = "auto" | "light" | "dark" | "black";
 export type TrackColor = "violet" | "blue" | "teal" | "green";
@@ -34,6 +35,7 @@ interface Props {
 export function MapMenu({ options, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const { shown, closing } = usePresence(open);
 
   useEffect(() => {
     if (!open) return;
@@ -44,9 +46,11 @@ export function MapMenu({ options, onChange }: Props) {
 
   return (
     <div className="marker-menu" ref={root}>
-      <button onClick={() => setOpen(!open)}>Map ▾</button>
-      {open && (
-        <div className="marker-panel">
+      <button className={open ? "open" : undefined} aria-expanded={open} onClick={() => setOpen(!open)}>
+        Map <span className="caret">▾</span>
+      </button>
+      {shown && (
+        <div className={closing ? "marker-panel closing" : "marker-panel"}>
           <div className="marker-group">Map theme</div>
           <div className="segmented">
             {MAP_THEMES.map((t) => (

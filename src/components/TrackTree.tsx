@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Collapse, usePresence } from "../presence";
 import {
   activityOf,
   api,
@@ -20,6 +21,7 @@ import {
   type PointSelection,
 } from "../pointEditing";
 import { MenuBox, PointMenu } from "./PointMenu";
+import { CleanupPanel } from "./CleanupPanel";
 
 const ROW = 20;
 const OVERSCAN = 10;
@@ -95,6 +97,20 @@ export function TrackTree(p: Props) {
   const [height, setHeight] = useState(300);
   const [menu, setMenu] = useState<Menu | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
+  const loadingHint = usePresence(!table);
+  // Open for one track; `run` counts openings, so reopening during the exit animation
+  // starts a fresh panel instead of reviving the closing one with its old preview.
+  const [cleanup, setCleanup] = useState<{ trackId: number | null; run: number }>({ trackId: null, run: 0 });
+  const cleaningUp = cleanup.trackId === track.id;
+  const cleanupOpen = useRef(cleaningUp);
+  cleanupOpen.current = cleaningUp;
+  const { onSelectionChange } = p;
+  // The closing panel stays mounted for its exit; a preview it finds then must not
+  // reselect points after Cancel cleared them.
+  const cleanupSelect = useCallback(
+    (s: PointSelection) => cleanupOpen.current && onSelectionChange(s),
+    [onSelectionChange],
+  );
   const box = useRef<HTMLDivElement>(null);
   const n = table?.length ?? 0;
 
@@ -311,14 +327,14 @@ export function TrackTree(p: Props) {
 
   const twisty = (key: string) => (
     <button
-      className="twisty"
+      className={collapsed.has(key) ? "twisty" : "twisty open"}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
         toggle(key);
       }}
     >
-      {collapsed.has(key) ? "▸" : "▾"}
+      <span className="caret">▾</span>
     </button>
   );
 
@@ -401,11 +417,11 @@ export function TrackTree(p: Props) {
           top,
           <>
             <button
-              className="twisty"
+              className={open ? "twisty open" : "twisty"}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={activate}
             >
-              {open ? "▾" : "▸"}
+              <span className="caret">▾</span>
             </button>
             <span className="tree-icon">{icon}</span>
             <span className="tree-title">{displayName(t)}</span>
@@ -475,7 +491,12 @@ export function TrackTree(p: Props) {
     for (let row = from; row < to; row++) rows.push(renderBlockRow(b, row - offsets[bi], row * ROW));
   }
 
-  const menuSeg = menu?.target === "seg" ? segments[menu.seg] : null;
+  // A fading menu shows what it showed when it closed, not the selection or segments an
+  // action changed since.
+  const menuView = usePresence(menu && table && { menu, table, sorted, segments, n });
+  const shownMenu = menuView.shown?.menu;
+  const menuClosing = menuView.closing;
+  const menuSeg = shownMenu?.target === "seg" ? menuView.shown!.segments[shownMenu.seg] : null;
 
   return (
     <div className="points">
@@ -486,7 +507,34 @@ export function TrackTree(p: Props) {
             ? `${sorted.length.toLocaleString()} of ${n.toLocaleString()} points selected`
             : `${n.toLocaleString()} points`}
         </span>
+        <button
+          disabled={cleaningUp}
+          aria-expanded={cleaningUp}
+          onClick={() => setCleanup((c) => ({ trackId: track.id, run: c.run + 1 }))}
+          title="Remove the scatter where the logger lay still, e.g. left on indoors"
+        >
+          Clean up…
+        </button>
       </div>
+      <Collapse show={cleaningUp}>
+        <div className="cleanup-slot">
+          <CleanupPanel
+            key={cleanup.run}
+            trackId={track.id}
+            table={table}
+            locked={p.locked}
+            onSelectionChange={cleanupSelect}
+            onZoomTo={p.onZoomTo}
+            onBeginEdit={p.onBeginEdit}
+            onEdited={p.onEdited}
+            onError={p.onError}
+            onClose={() => {
+              setCleanup((c) => ({ ...c, trackId: null }));
+              p.onSelectionChange(EMPTY_SELECTION);
+            }}
+          />
+        </div>
+      </Collapse>
       <div className="point-cols">
         <span className="num">#</span>
         <span>Time</span>
@@ -513,16 +561,18 @@ export function TrackTree(p: Props) {
           }
         }}
       >
-        {!table && <div className="hint">Loading points…</div>}
+        {loadingHint.shown && <div className={loadingHint.closing ? "hint closing" : "hint"}>Loading points…</div>}
         <div style={{ height: totalRows * ROW, position: "relative" }}>{rows}</div>
       </div>
-      {menu?.target === "points" && table && (
+      {shownMenu?.target === "points" && (
         <PointMenu
-          x={menu.x}
-          y={menu.y}
+          key={`${shownMenu.x},${shownMenu.y}`}
+          x={shownMenu.x}
+          y={shownMenu.y}
+          closing={menuClosing}
           trackId={track.id}
-          table={table}
-          selection={sorted}
+          table={menuView.shown!.table}
+          selection={menuView.shown!.sorted}
           onClose={closeMenu}
           onZoomTo={p.onZoomTo}
           onBeginEdit={p.onBeginEdit}
@@ -530,24 +580,24 @@ export function TrackTree(p: Props) {
           onError={p.onError}
         />
       )}
-      {menu?.target === "seg" && (
-        <MenuBox x={menu.x} y={menu.y}>
-          {menuSeg && menu.target === "seg" && (
+      {shownMenu?.target === "seg" && (
+        <MenuBox key={`${shownMenu.x},${shownMenu.y}`} x={shownMenu.x} y={shownMenu.y} closing={menuClosing}>
+          {menuSeg && (
             <>
               <button
-                disabled={menuSeg[1] - menuSeg[0] < 2 || n - (menuSeg[1] - menuSeg[0]) < 2}
+                disabled={menuSeg[1] - menuSeg[0] < 2 || menuView.shown!.n - (menuSeg[1] - menuSeg[0]) < 2}
                 onClick={() => run(() => api.extractTrackRange(track.id, menuSeg[0], menuSeg[1]))}
                 title="The segment becomes a track of its own; this track keeps the other segments"
               >
                 Make separate track
               </button>
               <button
-                disabled={menu.seg + 1 >= segments.length}
-                onClick={() => run(() => api.joinTrackSegment(track.id, segments[menu.seg + 1][0]))}
+                disabled={shownMenu.seg + 1 >= menuView.shown!.segments.length}
+                onClick={() => run(() => api.joinTrackSegment(track.id, segments[shownMenu.seg + 1][0]))}
               >
                 Join with next segment
               </button>
-              <button onClick={() => deletePoints(range(menuSeg[0], menuSeg[1]), `segment ${menu.seg + 1}`)}>
+              <button onClick={() => deletePoints(range(menuSeg[0], menuSeg[1]), `segment ${shownMenu.seg + 1}`)}>
                 Delete segment
               </button>
               <hr />

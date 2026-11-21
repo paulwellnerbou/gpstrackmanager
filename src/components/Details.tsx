@@ -15,8 +15,8 @@ import {
   type WaypointRow,
 } from "../api";
 import { TrackTree } from "./TrackTree";
-import { CleanupPanel } from "./CleanupPanel";
-import { EMPTY_SELECTION, type PointSelection } from "../pointEditing";
+import { Collapse } from "../presence";
+import type { PointSelection } from "../pointEditing";
 
 interface Props {
   track: TrackSummary;
@@ -51,15 +51,12 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
   const [title, setTitle] = useState(track.title ?? "");
   const [description, setDescription] = useState(track.description ?? "");
   const [tagInput, setTagInput] = useState("");
-  const [cleaningUp, setCleaningUp] = useState(false);
 
   useEffect(() => {
     setTitle(track.title ?? "");
     setDescription(track.description ?? "");
     setTagInput("");
   }, [track.id, track.title, track.description]);
-
-  useEffect(() => setCleaningUp(false), [track.id]);
 
   const save = () => {
     if (title !== (track.title ?? "") || description !== (track.description ?? "")) onSaveMeta(title, description);
@@ -78,31 +75,6 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
   return (
     <aside className="details">
       <div className="details-top">
-        {cleaningUp ? (
-          <CleanupPanel
-            trackId={track.id}
-            table={edit.table}
-            locked={edit.locked}
-            onSelectionChange={edit.onSelectionChange}
-            onZoomTo={edit.onZoomTo}
-            onBeginEdit={edit.onBeginEdit}
-            onEdited={edit.onEdited}
-            onError={edit.onError}
-            onClose={() => {
-              setCleaningUp(false);
-              edit.onSelectionChange(EMPTY_SELECTION);
-            }}
-          />
-        ) : (
-          <div className="track-actions">
-            <button
-              onClick={() => setCleaningUp(true)}
-              title="Remove the scatter where the logger lay still, e.g. left on indoors"
-            >
-              Clean up track…
-            </button>
-          </div>
-        )}
         <label>
           Title
           <input value={title} placeholder={fallbackName} onChange={(e) => setTitle(e.target.value)} onBlur={save} />
@@ -189,7 +161,7 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
             {track.missing && <strong className="missing"> missing</strong>}
           </dd>
         </dl>
-        {(track.edited || lastEdit) && (
+        <Collapse show={!!(track.edited || lastEdit)}>
           <div className="edited-note">
             Points edited in the catalog; the file is unchanged.{" "}
             {lastEdit && (
@@ -223,7 +195,7 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
               Revert to file
             </button>
           </div>
-        )}
+        </Collapse>
       </div>
       <div className="open-in">
         <button onClick={() => call(() => api.openInGoogleEarth(track.id))} title="Export as KML and open it">

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { api, type PointTable } from "../api";
 import { bboxOf, confirmDelete, pointsLabel } from "../pointEditing";
 
@@ -15,12 +15,15 @@ interface Props {
   onBeginEdit: () => void;
   onEdited: () => void;
   onError: (message: string) => void;
+  /** Playing the exit animation; the menu no longer reacts. */
+  closing?: boolean;
 }
 
 /** Context menu for selected points; opened from the tree or the map. */
 export function PointMenu(props: Props) {
-  const { x, y, trackId, table, selection, onClose, onZoomTo, onBeginEdit, onEdited, onError } = props;
+  const { x, y, trackId, table, selection, onClose, onZoomTo, onBeginEdit, onEdited, onError, closing } = props;
   useEffect(() => {
+    if (closing) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("mousedown", onClose);
     window.addEventListener("keydown", onKey);
@@ -28,7 +31,7 @@ export function PointMenu(props: Props) {
       window.removeEventListener("mousedown", onClose);
       window.removeEventListener("keydown", onKey);
     };
-  }, [onClose]);
+  }, [onClose, closing]);
 
   const run = async (action: () => Promise<unknown>) => {
     onClose();
@@ -53,7 +56,7 @@ export function PointMenu(props: Props) {
   const canSplit = selection.length > 0 && splitAt >= 2 && splitAt <= table.length - 2;
 
   return (
-    <MenuBox x={x} y={y}>
+    <MenuBox x={x} y={y} closing={closing}>
       <button disabled={!canSplit} onClick={() => run(() => api.splitTrack(trackId, splitAt))}>
         Split track here (new track starts at #{(splitAt ?? 0) + 1})
       </button>
@@ -76,22 +79,28 @@ export function PointMenu(props: Props) {
 }
 
 /** A context menu at a click position, moved or flipped so it stays inside the window. */
-export function MenuBox({ x, y, children }: { x: number; y: number; children: ReactNode }) {
+export function MenuBox({ x, y, closing, children }: { x: number; y: number; closing?: boolean; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ left: x, top: y });
+  const [pos, setPos] = useState<CSSProperties>({ left: x, top: y });
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const { width, height } = el.getBoundingClientRect();
+    // Layout size: the bounding rect would include the entry animation's scale.
+    const { offsetWidth: width, offsetHeight: height } = el;
     const margin = 4;
-    const top = y + height > window.innerHeight - margin ? y - height : y;
-    setPos({
-      left: Math.max(margin, Math.min(x, window.innerWidth - width - margin)),
-      top: Math.max(margin, Math.min(top, window.innerHeight - height - margin)),
-    });
+    const flipped = y + height > window.innerHeight - margin;
+    const left = Math.max(margin, Math.min(x, window.innerWidth - width - margin));
+    const top = Math.max(margin, Math.min(flipped ? y - height : y, window.innerHeight - height - margin));
+    // Grow out of the click point, wherever the menu ended up relative to it.
+    setPos({ left, top, transformOrigin: `${x - left}px ${y - top}px` });
   }, [x, y]);
   return (
-    <div ref={ref} className="context-menu" style={pos} onMouseDown={(e) => e.stopPropagation()}>
+    <div
+      ref={ref}
+      className={closing ? "context-menu closing" : "context-menu"}
+      style={pos}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
       {children}
     </div>
   );
