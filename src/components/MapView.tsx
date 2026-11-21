@@ -7,6 +7,7 @@ import { api, type Line, type MapFocus, type PointTable, type TrackSummary, type
 import { TrackMarkers, type MarkerOptions } from "./trackMarkers";
 import { useColorScheme } from "../useColorScheme";
 import { clickSelection, isToggleKey, type PointSelection } from "../pointEditing";
+import { GeoSearch } from "./GeoSearch";
 import { installBoxSelect, pointAt, pointsInRect, updateDots, type PointView } from "./mapPoints";
 
 // MapLibre locates its worker relative to its own module URL, which Vite's dependency
@@ -434,6 +435,7 @@ export function MapView({
   return (
     <div className="map-wrap">
       <div ref={container} className="map" />
+      <GeoSearch map={ready ? mapRef.current : null} />
       {baseMapFailed && <div className="map-hint map-hint-bottom">Base map unavailable (offline?)</div>}
       {tooManyDots != null && (
         <div className="map-hint">Zoom in to see points ({tooManyDots.toLocaleString()} in view)</div>

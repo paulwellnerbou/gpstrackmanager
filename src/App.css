@@ -278,7 +278,8 @@ main {
 }
 .map-hint {
   position: absolute;
-  top: 10px;
+  /* Below the place search box, which shares the top edge. */
+  top: 50px;
   left: 50%;
   transform: translateX(-50%);
   background: var(--panel);
@@ -698,4 +699,80 @@ main {
 .segmented button.active {
   background: var(--accent);
   color: #fff;
+}
+.geo-search {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 6;
+  width: 300px;
+  max-width: calc(100% - 20px);
+}
+.geo-search-box {
+  position: relative;
+}
+.geo-search-box input {
+  width: 100%;
+  padding: 6px 26px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  outline: none;
+}
+.geo-search-box input:focus {
+  border-color: var(--accent);
+}
+.geo-search-box input::-webkit-search-cancel-button {
+  display: none;
+}
+.geo-search-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.geo-search-results {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  max-height: 320px;
+  overflow-y: auto;
+}
+.geo-search-results li {
+  display: flex;
+  flex-direction: column;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.geo-search-results li.active {
+  background: var(--accent-soft);
+}
+.geo-search-label {
+  font-weight: 500;
+}
+.geo-search-detail {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.geo-search-results li.geo-search-error {
+  color: var(--accent);
+  cursor: default;
 }
