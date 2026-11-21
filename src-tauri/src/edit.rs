@@ -7,26 +7,65 @@ use anyhow::{Result, bail};
 use rusqlite::{Connection, Transaction, params};
 
 use crate::catalog::{self, TrackData};
+use crate::geo::{bearing_deg, haversine_m};
 use crate::model::{NO_TIME, ParsedTrack, Points};
 use crate::parse::Format;
 use crate::process::{ProcessedTrack, process_file, process_track};
 
-/// Flat `[lat, lon, ele, time_ms, segment_start, …]`; NaN for unknown ele/time,
-/// `segment_start` is 1 for the first point of a segment.
+pub const POINT_COLUMNS: usize = 8;
+
+/// Flat rows of `[lat, lon, ele, time_ms, segment_start, distance_m, speed_ms, bearing_deg]`.
+/// NaN marks unknown values; `segment_start` is 1 for a segment's first point.
+/// Distance does not include gaps between segments. Speed and bearing are taken over
+/// both neighbours within the segment, which smooths single-fix jitter.
 pub fn point_table(data: &TrackData) -> Vec<f64> {
-    let mut seg = data.seg_starts.iter().peekable();
-    let mut out = Vec::with_capacity(data.coords.len() * 5);
-    for (i, &(lat, lon)) in data.coords.iter().enumerate() {
-        let mut start = false;
-        while seg.peek().is_some_and(|&&s| s as usize <= i) {
-            start |= *seg.next().unwrap() as usize == i;
+    let n = data.coords.len();
+    let mut is_start = vec![false; n];
+    let mut seg_end = vec![n; n];
+    let mut seg_begin = vec![0; n];
+    for (k, &s) in data.seg_starts.iter().enumerate() {
+        let e = data.seg_starts.get(k + 1).map(|&e| e as usize).unwrap_or(n);
+        if (s as usize) < e {
+            is_start[s as usize] = true;
+            for i in s as usize..e {
+                seg_begin[i] = s as usize;
+                seg_end[i] = e;
+            }
         }
+    }
+    let step = |a: usize, b: usize| {
+        let (p, q) = (data.coords[a], data.coords[b]);
+        haversine_m(p.0, p.1, q.0, q.1)
+    };
+    let mut dist = vec![0f64; n];
+    for i in 1..n {
+        dist[i] = dist[i - 1] + if is_start[i] { 0.0 } else { step(i - 1, i) };
+    }
+    let time = |i: usize| if data.time[i] == NO_TIME { f64::NAN } else { data.time[i] as f64 };
+
+    let mut out = Vec::with_capacity(n * POINT_COLUMNS);
+    for i in 0..n {
+        let a = if i > seg_begin[i] { i - 1 } else { i };
+        let b = if i + 1 < seg_end[i] { i + 1 } else { i };
+        let dt = (time(b) - time(a)) / 1000.0;
+        let d = dist[b] - dist[a];
+        let speed = if dt > 0.0 { d / dt } else { f64::NAN };
+        let bearing = if a != b && d > 0.0 {
+            let (p, q) = (data.coords[a], data.coords[b]);
+            bearing_deg(p.0, p.1, q.0, q.1)
+        } else {
+            f64::NAN
+        };
+        let (lat, lon) = data.coords[i];
         out.extend_from_slice(&[
             lat,
             lon,
             data.ele[i] as f64,
-            if data.time[i] == NO_TIME { f64::NAN } else { data.time[i] as f64 },
-            if start { 1.0 } else { 0.0 },
+            time(i),
+            if is_start[i] { 1.0 } else { 0.0 },
+            dist[i],
+            speed,
+            bearing,
         ]);
     }
     out
@@ -59,7 +98,7 @@ fn subset(data: &TrackData, keep: &[usize]) -> Points {
 }
 
 fn process(points: Points) -> ProcessedTrack {
-    process_track(ParsedTrack { name: None, description: None, points })
+    process_track(ParsedTrack { name: None, description: None, activity: None, points })
 }
 
 fn write_geometry(tx: &Transaction, track_id: i64, t: &ProcessedTrack) -> Result<()> {
@@ -125,9 +164,10 @@ pub fn split(conn: &mut Connection, track_id: i64, at: u32) -> Result<i64> {
         Path::new(&path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or(path.clone())
     });
     tx.execute(
-        "INSERT INTO tracks(file_id, idx, name, file_description, title, description, point_count, distance_m, edited)
+        "INSERT INTO tracks(file_id, idx, name, file_description, title, description, file_activity, activity,
+           point_count, distance_m, edited)
          SELECT file_id, (SELECT MIN(0, MIN(idx)) FROM tracks WHERE file_id = ?2) - 1,
-                name, file_description, ?3, description, 0, 0, 1
+                name, file_description, ?3, description, file_activity, activity, 0, 0, 1
          FROM tracks WHERE id = ?1",
         params![track_id, file_id, format!("{base} (part 2)")],
     )?;
@@ -224,8 +264,16 @@ mod tests {
 
     #[test]
     fn point_table_flags_segment_starts() {
-        let t = point_table(&data(4, vec![0, 2]));
-        let flags: Vec<f64> = t.chunks(5).map(|r| r[4]).collect();
+        let mut d = data(4, vec![0, 2]);
+        d.time = vec![0, 10_000, 20_000, 30_000];
+        let t = point_table(&d);
+        let rows: Vec<&[f64]> = t.chunks(POINT_COLUMNS).collect();
+        let flags: Vec<f64> = rows.iter().map(|r| r[4]).collect();
         assert_eq!(flags, vec![1.0, 0.0, 1.0, 0.0]);
+        // 0.001° of latitude is ~111 m; the gap between segments is not counted.
+        assert!((rows[1][5] - 111.2).abs() < 0.5);
+        assert_eq!(rows[2][5], rows[1][5]);
+        assert!((rows[1][6] - 11.12).abs() < 0.1, "speed over 10 s");
+        assert!(rows[0][7].abs() < 1e-6, "heading north");
     }
 }

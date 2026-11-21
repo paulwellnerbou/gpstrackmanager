@@ -26,6 +26,32 @@ export interface TrackSummary {
   tags: string[];
   missing: boolean;
   edited: boolean;
+  /** User choice; null means "as in the file". */
+  activity: string | null;
+  fileActivity: string | null;
+}
+
+export const ACTIVITIES: { key: string; label: string; icon: string }[] = [
+  { key: "walking", label: "Walking", icon: "🚶" },
+  { key: "hiking", label: "Hiking", icon: "🥾" },
+  { key: "running", label: "Running", icon: "🏃" },
+  { key: "bike", label: "Bike", icon: "🚴" },
+  { key: "mtb", label: "Mountain bike", icon: "🚵" },
+  { key: "riding", label: "Riding", icon: "🐎" },
+  { key: "car", label: "Car", icon: "🚗" },
+  { key: "motorbike", label: "Motorbike", icon: "🏍️" },
+  { key: "bus", label: "Bus", icon: "🚌" },
+  { key: "train", label: "Train", icon: "🚆" },
+  { key: "boat", label: "Boat", icon: "⛵" },
+  { key: "aeroplane", label: "Aeroplane", icon: "✈️" },
+  { key: "skiing", label: "Skiing", icon: "⛷️" },
+  { key: "swimming", label: "Swimming", icon: "🏊" },
+  { key: "other", label: "Other", icon: "📍" },
+];
+
+export function activityOf(t: TrackSummary) {
+  const key = t.activity ?? t.fileActivity;
+  return ACTIVITIES.find((a) => a.key === key) ?? null;
 }
 
 export interface PointTable {
@@ -33,8 +59,15 @@ export interface PointTable {
   lat: Float64Array;
   lon: Float64Array;
   ele: Float64Array;
+  /** Unix ms, NaN if unknown. */
   time: Float64Array;
   segStart: Uint8Array;
+  /** Metres from the start, gaps between segments not counted. */
+  dist: Float64Array;
+  /** m/s, NaN if unknown. */
+  speed: Float64Array;
+  /** Degrees clockwise from north, NaN if unknown. */
+  bearing: Float64Array;
 }
 
 export interface ScanProgress {
@@ -92,6 +125,7 @@ export const api = {
   updateTrackMeta: (id: number, title: string | null, description: string | null) =>
     invoke<void>("update_track_meta", { id, title, description }),
   setTrackTags: (id: number, tags: string[]) => invoke<void>("set_track_tags", { id, tags }),
+  setTrackActivity: (id: number, activity: string | null) => invoke<void>("set_track_activity", { id, activity }),
   listGpsDevices: () => invoke<GpsDevice[]>("list_gps_devices"),
   importDeviceFiles: (rootId: number, files: string[]) =>
     invoke<{ copied: string[]; skipped: number }>("import_device_files", { rootId, files }),
@@ -105,23 +139,26 @@ export const api = {
 
   async pointTable(id: number): Promise<PointTable> {
     const v = f64(await invoke<ArrayBuffer>("get_track_point_table", { id }));
-    const n = v.length / 5;
-    const t: PointTable = {
-      length: n,
-      lat: new Float64Array(n),
-      lon: new Float64Array(n),
-      ele: new Float64Array(n),
-      time: new Float64Array(n),
-      segStart: new Uint8Array(n),
+    const C = 8;
+    const n = v.length / C;
+    const col = (c: number) => {
+      const out = new Float64Array(n);
+      for (let i = 0; i < n; i++) out[i] = v[i * C + c];
+      return out;
     };
-    for (let i = 0; i < n; i++) {
-      t.lat[i] = v[i * 5];
-      t.lon[i] = v[i * 5 + 1];
-      t.ele[i] = v[i * 5 + 2];
-      t.time[i] = v[i * 5 + 3];
-      t.segStart[i] = v[i * 5 + 4];
-    }
-    return t;
+    const segStart = new Uint8Array(n);
+    for (let i = 0; i < n; i++) segStart[i] = v[i * C + 4];
+    return {
+      length: n,
+      lat: col(0),
+      lon: col(1),
+      ele: col(2),
+      time: col(3),
+      segStart,
+      dist: col(5),
+      speed: col(6),
+      bearing: col(7),
+    };
   },
 
   /** Map of track id → lines, from the pre-thinned overview data. */

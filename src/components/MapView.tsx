@@ -3,7 +3,8 @@ import { Map as MapLibreMap, setWorkerUrl, type StyleSpecification, type GeoJSON
 import "maplibre-gl/dist/maplibre-gl.css";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 import type { Feature, GeoJSON as GeoJSONData } from "geojson";
-import { api, type Line, type TrackSummary } from "../api";
+import { api, type Line, type PointTable, type TrackSummary } from "../api";
+import { TrackMarkers, type MarkerOptions } from "./trackMarkers";
 
 // MapLibre locates its worker relative to its own module URL, which Vite's dependency
 // pre-bundling relocates; point it at the real file instead.
@@ -17,6 +18,10 @@ const BLANK_STYLE: StyleSpecification = {
 };
 
 const OWN_SOURCES = ["overview", "detail", "highlight", "cursor"] as const;
+/** Drawing more highlighted points than this adds nothing but load. */
+const MAX_HIGHLIGHT = 5000;
+const OVERVIEW_COLOR = "#7a5cc4";
+const OVERVIEW_DIMMED = "#9c97a8";
 
 interface Props {
   tracks: TrackSummary[];
@@ -25,7 +30,11 @@ interface Props {
   showBaseMap: boolean;
   showAll: boolean;
   cursor: [number, number] | null;
-  highlight: [number, number][];
+  /** Point table of the selected track, for markers and highlighted points. */
+  table: PointTable | null;
+  /** Selected point indices, ascending. */
+  pointSelection: number[];
+  markerOptions: MarkerOptions;
   focus: { bbox: [number, number, number, number]; seq: number } | null;
   version: number;
   onSelect: (id: number) => void;
@@ -43,21 +52,21 @@ function addOwnLayers(map: MapLibreMap) {
     id: "overview",
     type: "line",
     source: "overview",
-    paint: { "line-color": "#7a5cc4", "line-width": 1.5, "line-opacity": 0.55 },
+    paint: { "line-color": OVERVIEW_COLOR, "line-width": 1.5, "line-opacity": 0.55 },
   });
   map.addLayer({
     id: "detail-casing",
     type: "line",
     source: "detail",
     layout: { "line-join": "round", "line-cap": "round" },
-    paint: { "line-color": "#ffffff", "line-width": 6 },
+    paint: { "line-color": "#ffffff", "line-width": 8 },
   });
   map.addLayer({
     id: "detail",
     type: "line",
     source: "detail",
     layout: { "line-join": "round", "line-cap": "round" },
-    paint: { "line-color": "#d6336c", "line-width": 3 },
+    paint: { "line-color": "#d6336c", "line-width": 4 },
   });
   map.addLayer({
     id: "highlight",
@@ -84,7 +93,9 @@ export function MapView({
   showBaseMap,
   showAll,
   cursor,
-  highlight,
+  table,
+  pointSelection,
+  markerOptions,
   focus,
   version,
   onSelect,
@@ -96,6 +107,7 @@ export function MapView({
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
   const [ready, setReady] = useState(false);
+  const markers = useRef<TrackMarkers | null>(null);
 
   // Detail is re-fetched for every view change: the backend returns only what is
   // visible, thinned to the current zoom, so huge tracks never reach the renderer whole.
@@ -129,6 +141,7 @@ export function MapView({
     mapRef.current = map;
     map.on("load", () => {
       addOwnLayers(map);
+      markers.current = new TrackMarkers(map);
       setReady(true);
     });
     map.on("moveend", () => refreshDetail.current());
@@ -187,11 +200,22 @@ export function MapView({
     setData(map, "overview", { type: "FeatureCollection", features });
   }, [tracks, overview, selected?.id, ready, showAll]);
 
+  // The other tracks fade while one is selected, so even a tiny selected track stands out.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    map.setPaintProperty("overview", "line-color", selected ? OVERVIEW_DIMMED : OVERVIEW_COLOR);
+    map.setPaintProperty("overview", "line-opacity", selected ? 0.35 : 0.55);
+  }, [selected?.id, ready]);
+
   useEffect(() => {
     selectedRef.current = selected;
     const map = mapRef.current;
     if (!map) return;
     const b = selected?.bbox;
+    // Show the coarse overview geometry at once; the detailed fetch replaces it.
+    const coarse = selected && overview.get(selected.id);
+    if (coarse && map.getSource("detail")) setData(map, "detail", multiLine(coarse));
     refreshDetail.current();
     if (!b) return;
     // Selecting can open the details panel and shrink the map; a resize mid-animation
@@ -218,13 +242,22 @@ export function MapView({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
+    const coords: [number, number][] = [];
+    if (table) {
+      const step = Math.max(1, Math.ceil(pointSelection.length / MAX_HIGHLIGHT));
+      for (let k = 0; k < pointSelection.length; k += step) {
+        const i = pointSelection[k];
+        if (i < table.length) coords.push([table.lon[i], table.lat[i]]);
+      }
+    }
     setData(map, "highlight", {
       type: "FeatureCollection",
-      features: highlight.length
-        ? [{ type: "Feature", properties: {}, geometry: { type: "MultiPoint", coordinates: highlight } }]
+      features: coords.length
+        ? [{ type: "Feature", properties: {}, geometry: { type: "MultiPoint", coordinates: coords } }]
         : [],
     });
-  }, [highlight, ready]);
+    markers.current?.update(table, pointSelection, markerOptions);
+  }, [table, pointSelection, markerOptions, ready]);
 
   useEffect(() => {
     const map = mapRef.current;

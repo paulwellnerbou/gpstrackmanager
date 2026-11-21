@@ -4,14 +4,12 @@ import { api, type PointTable, type TrackSummary } from "../api";
 
 const ROW = 20;
 const OVERSCAN = 10;
-/** Drawing more highlighted points than this on the map adds nothing but load. */
-const MAX_HIGHLIGHT = 5000;
 
 interface Props {
   track: TrackSummary;
-  version: number;
+  table: PointTable | null;
   onHover: (lonLat: [number, number] | null) => void;
-  onHighlight: (points: [number, number][]) => void;
+  onSelectionChange: (sortedIndices: number[]) => void;
   onZoomTo: (bbox: [number, number, number, number]) => void;
   onEdited: () => void;
   onError: (message: string) => void;
@@ -28,8 +26,7 @@ function timeOfDay(ms: number) {
 }
 
 /** Virtualised so tracks with hundreds of thousands of points stay responsive. */
-export function PointList({ track, version, onHover, onHighlight, onZoomTo, onEdited, onError }: Props) {
-  const [table, setTable] = useState<PointTable | null>(null);
+export function PointList({ track, table, onHover, onSelectionChange, onZoomTo, onEdited, onError }: Props) {
   const [selection, setSelection] = useState<Set<number>>(new Set());
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(300);
@@ -37,20 +34,11 @@ export function PointList({ track, version, onHover, onHighlight, onZoomTo, onEd
   const anchor = useRef<number | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
+  // Indices refer to one version of the track; a new table invalidates them.
   useEffect(() => {
-    let cancelled = false;
-    setTable(null);
     setSelection(new Set());
     anchor.current = null;
-    api
-      .pointTable(track.id)
-      .then((t) => !cancelled && setTable(t))
-      .catch((e) => onError(String(e)));
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track.id, version]);
+  }, [table]);
 
   useEffect(() => {
     const el = box.current;
@@ -62,16 +50,8 @@ export function PointList({ track, version, onHover, onHighlight, onZoomTo, onEd
 
   const sorted = useMemo(() => [...selection].sort((a, b) => a - b), [selection]);
 
-  useEffect(() => {
-    if (!table) return onHighlight([]);
-    const step = Math.max(1, Math.ceil(sorted.length / MAX_HIGHLIGHT));
-    const pts: [number, number][] = [];
-    for (let k = 0; k < sorted.length; k += step) pts.push([table.lon[sorted[k]], table.lat[sorted[k]]]);
-    onHighlight(pts);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sorted, table]);
-
-  useEffect(() => () => onHighlight([]), [onHighlight]);
+  useEffect(() => onSelectionChange(sorted), [sorted, onSelectionChange]);
+  useEffect(() => () => onSelectionChange([]), [onSelectionChange]);
 
   useEffect(() => {
     if (!menu) return;

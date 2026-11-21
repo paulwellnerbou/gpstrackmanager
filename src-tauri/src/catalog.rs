@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS tracks(
   file_description TEXT,         -- from the file
   title TEXT,                    -- user override, survives rescans
   description TEXT,              -- user, survives rescans
+  file_activity TEXT,            -- from the file (FIT sport, GPX type)
+  activity TEXT,                 -- user override
   start_time INTEGER,
   end_time INTEGER,
   point_count INTEGER NOT NULL,
@@ -88,6 +90,19 @@ fn migrate(conn: &Connection) -> Result<()> {
             conn.execute_batch("ALTER TABLE tracks ADD COLUMN edited INTEGER NOT NULL DEFAULT 0")?;
         }
         conn.pragma_update(None, "user_version", 1)?;
+    }
+    if version < 2 {
+        for col in ["file_activity", "activity"] {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('tracks') WHERE name = ?1",
+                [col],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                conn.execute_batch(&format!("ALTER TABLE tracks ADD COLUMN {col} TEXT"))?;
+            }
+        }
+        conn.pragma_update(None, "user_version", 2)?;
     }
     Ok(())
 }
@@ -177,10 +192,11 @@ pub fn write_import(conn: &mut Connection, root_id: i64, imp: &FileImport) -> Re
         let bbox = s.bbox.map(|b| b.map(Some)).unwrap_or([None; 4]);
         let track_id: Option<i64> = tx.query_row(
             "INSERT INTO tracks(file_id, idx, name, file_description, start_time, end_time, point_count,
-               distance_m, min_lat, min_lon, max_lat, max_lon, min_ele, max_ele)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+               distance_m, min_lat, min_lon, max_lat, max_lon, min_ele, max_ele, file_activity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(file_id, idx) DO UPDATE SET name = excluded.name,
-               file_description = excluded.file_description, start_time = excluded.start_time,
+               file_description = excluded.file_description, file_activity = excluded.file_activity,
+               start_time = excluded.start_time,
                end_time = excluded.end_time, point_count = excluded.point_count,
                distance_m = excluded.distance_m, min_lat = excluded.min_lat, min_lon = excluded.min_lon,
                max_lat = excluded.max_lat, max_lon = excluded.max_lon, min_ele = excluded.min_ele,
@@ -189,7 +205,8 @@ pub fn write_import(conn: &mut Connection, root_id: i64, imp: &FileImport) -> Re
              RETURNING id",
             params![
                 file_id, idx as i64, t.name, t.description, s.start_time, s.end_time,
-                s.point_count as i64, s.distance_m, bbox[0], bbox[1], bbox[2], bbox[3], s.min_ele, s.max_ele
+                s.point_count as i64, s.distance_m, bbox[0], bbox[1], bbox[2], bbox[3], s.min_ele, s.max_ele,
+                t.activity
             ],
             |r| r.get(0),
         ).optional()?;
@@ -246,6 +263,9 @@ pub struct TrackSummary {
     pub tags: Vec<String>,
     pub missing: bool,
     pub edited: bool,
+    /// User choice; `None` means "as in the file".
+    pub activity: Option<String>,
+    pub file_activity: Option<String>,
 }
 
 pub fn list_tracks(conn: &Connection) -> Result<Vec<TrackSummary>> {
@@ -257,7 +277,7 @@ pub fn list_tracks(conn: &Connection) -> Result<Vec<TrackSummary>> {
                 t.min_ele, t.max_ele,
                 (SELECT group_concat(g.name, char(31)) FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
                   WHERE tt.track_id = t.id),
-                f.missing, t.edited
+                f.missing, t.edited, t.activity, t.file_activity
          FROM tracks t JOIN files f ON f.id = t.file_id
          ORDER BY t.start_time DESC NULLS LAST, f.path, t.idx",
     )?;
@@ -288,6 +308,8 @@ pub fn list_tracks(conn: &Connection) -> Result<Vec<TrackSummary>> {
             tags: tags.map(|s| s.split('\u{1f}').map(String::from).collect()).unwrap_or_default(),
             missing: r.get::<_, i64>(21)? != 0,
             edited: r.get::<_, i64>(22)? != 0,
+            activity: r.get(23)?,
+            file_activity: r.get(24)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -364,6 +386,11 @@ pub fn update_track_meta(conn: &Connection, id: i64, title: Option<&str>, descri
         "UPDATE tracks SET title = ?2, description = ?3 WHERE id = ?1",
         params![id, clean(title), clean(description)],
     )?;
+    Ok(())
+}
+
+pub fn set_track_activity(conn: &Connection, id: i64, activity: Option<&str>) -> Result<()> {
+    conn.execute("UPDATE tracks SET activity = ?2 WHERE id = ?1", params![id, activity.filter(|a| !a.is_empty())])?;
     Ok(())
 }
 

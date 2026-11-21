@@ -346,6 +346,8 @@ main {
 .point-list {
   flex: 1;
   overflow-y: auto;
+  /* Rows are swapped while scrolling; anchoring to them would make the list drift. */
+  overflow-anchor: none;
   position: relative;
   outline: none;
   user-select: none;
@@ -422,6 +424,7 @@ main {
 }
 .details label input,
 .details label textarea,
+.details label select,
 .details .tags {
   text-transform: none;
   letter-spacing: normal;
@@ -443,4 +446,100 @@ main {
 .stats .path {
   word-break: break-all;
   font-size: 11.5px;
+}
+
+.marker-menu {
+  position: relative;
+}
+.marker-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 50;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 240px;
+}
+.marker-group {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+/* Map markers: DOM elements, so they render in no-map mode too (no font glyphs needed). */
+.trk-pin {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  color: #fff;
+  font: 700 12px/20px -apple-system, system-ui, sans-serif;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  cursor: default;
+}
+.trk-pin-start {
+  background: #2f9e44;
+}
+.trk-pin-end {
+  background: #e03131;
+}
+/* No `position` here: MapLibre positions markers absolutely, and overriding that makes
+   them stack in document flow, away from their coordinates. */
+.trk-mk {
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+}
+.trk-arrow {
+  width: 16px;
+  height: 16px;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
+}
+.trk-arrow svg {
+  display: block;
+}
+.trk-mk-dot::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: #f08c00;
+  border: 1.5px solid #fff;
+}
+.trk-label {
+  position: absolute;
+  left: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.95);
+  color: #1f1d1a;
+  font: 600 11.5px/1 -apple-system, system-ui, sans-serif;
+  padding: 4px 7px;
+  border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+.trk-mk-selection .trk-label {
+  background: #fff4e0;
+}
+
+.details select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.activity-icon {
+  margin-right: 5px;
 }

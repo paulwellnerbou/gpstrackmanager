@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  activityOf,
   api,
   displayName,
   formatDistance,
@@ -171,7 +172,14 @@ export function Sidebar(p: Props) {
               className={t.id === p.selectedId ? "selected" : undefined}
               onClick={() => p.onSelect(t.id)}
             >
-              <div className="track-name">{displayName(t)}</div>
+              <div className="track-name">
+                {activityOf(t) && (
+                  <span className="activity-icon" title={activityOf(t)!.label}>
+                    {activityOf(t)!.icon}
+                  </span>
+                )}
+                {displayName(t)}
+              </div>
               <div className="track-meta">
                 {t.startTime ? new Date(t.startTime).toLocaleDateString() : "no date"} · {formatDistance(t.distanceM)} ·{" "}
                 {t.pointCount.toLocaleString()} pts

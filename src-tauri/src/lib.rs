@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod catalog;
 pub mod codec;
 pub mod device;
@@ -187,6 +188,11 @@ fn update_track_meta(state: State<AppState>, id: i64, title: Option<String>, des
 }
 
 #[tauri::command]
+fn set_track_activity(state: State<AppState>, id: i64, activity: Option<String>) -> CmdResult<()> {
+    catalog::set_track_activity(&state.db.lock().unwrap(), id, activity.as_deref()).map_err(err)
+}
+
+#[tauri::command]
 fn set_track_tags(state: State<AppState>, id: i64, tags: Vec<String>) -> CmdResult<()> {
     catalog::set_track_tags(&mut state.db.lock().unwrap(), id, &tags).map_err(err)
 }
@@ -238,6 +244,7 @@ pub fn run() {
             reveal_track_file,
             update_track_meta,
             set_track_tags,
+            set_track_activity,
             list_tags,
             list_gps_devices,
             import_device_files,

@@ -12,6 +12,7 @@ enum Capture {
     None,
     Name,
     Desc,
+    Type,
     Ele,
     Time,
 }
@@ -43,7 +44,12 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
         match event {
             Event::Start(e) => match e.local_name().as_ref() {
                 "trk" | "rte" => {
-                    current = Some(ParsedTrack { name: None, description: None, points: Points::default() });
+                    current = Some(ParsedTrack {
+                        name: None,
+                        description: None,
+                        activity: None,
+                        points: Points::default(),
+                    });
                 }
                 "trkseg" => {
                     if let Some(t) = current.as_mut() {
@@ -58,6 +64,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
                 }
                 "name" if current.is_some() && !in_point => begin(&mut capture, &mut buf, Capture::Name),
                 "desc" if current.is_some() && !in_point => begin(&mut capture, &mut buf, Capture::Desc),
+                "type" if current.is_some() && !in_point => begin(&mut capture, &mut buf, Capture::Type),
                 "ele" if in_point => begin(&mut capture, &mut buf, Capture::Ele),
                 "time" if in_point => begin(&mut capture, &mut buf, Capture::Time),
                 _ => {}
@@ -98,11 +105,16 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
                         push_point(&mut t.points, pt_lat, pt_lon, pt_ele, pt_time);
                     }
                 }
-                "name" | "desc" | "ele" | "time" if capture != Capture::None => {
+                "name" | "desc" | "type" | "ele" | "time" if capture != Capture::None => {
                     let value = buf.trim();
                     match capture {
                         Capture::Name => set_text(current.as_mut().map(|t| &mut t.name), value),
                         Capture::Desc => set_text(current.as_mut().map(|t| &mut t.description), value),
+                        Capture::Type => {
+                            if let Some(t) = current.as_mut() {
+                                t.activity = crate::activity::normalize(value);
+                            }
+                        }
                         Capture::Ele => pt_ele = value.parse::<f32>().ok().filter(|v| v.is_finite()),
                         Capture::Time => pt_time = parse_time(value),
                         Capture::None => {}
@@ -174,7 +186,7 @@ mod tests {
     const SAMPLE: &str = r#"<?xml version="1.0"?>
 <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
   <wpt lat="1" lon="1"><name>ignored waypoint</name></wpt>
-  <trk><name>Morning &amp; walk</name><desc><![CDATA[Nice]]></desc>
+  <trk><name>Morning &amp; walk</name><type>Walking</type><desc><![CDATA[Nice]]></desc>
     <trkseg>
       <trkpt lat="52.5" lon="13.4"><ele>34.5</ele><time>2024-05-15T17:26:38Z</time><name>pt</name></trkpt>
       <trkpt lat="52.6" lon="13.5"/>
@@ -191,6 +203,7 @@ mod tests {
         let t = &tracks[0];
         assert_eq!(t.name.as_deref(), Some("Morning & walk"));
         assert_eq!(t.description.as_deref(), Some("Nice"));
+        assert_eq!(t.activity.as_deref(), Some("walking"));
         assert_eq!(t.points.len(), 3);
         assert_eq!(t.points.segments(), vec![(0, 2), (2, 3)]);
         assert_eq!(t.points.ele[0], 34.5);

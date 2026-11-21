@@ -10,6 +10,15 @@ pub fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     2.0 * EARTH_RADIUS_M * a.sqrt().asin()
 }
 
+/// Initial great-circle bearing from point 1 to point 2, degrees clockwise from north.
+pub fn bearing_deg(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
+    let dl = (lon2 - lon1).to_radians();
+    let y = dl.sin() * p2.cos();
+    let x = p1.cos() * p2.sin() - p1.sin() * p2.cos() * dl.cos();
+    (y.atan2(x).to_degrees() + 360.0) % 360.0
+}
+
 /// Web-Mercator world coordinates normalised to [0, 1], the space MapLibre renders in,
 /// so a tolerance of one screen pixel at zoom z is exactly `1 / (512 * 2^z)`.
 pub fn mercator(lat: f64, lon: f64) -> (f64, f64) {

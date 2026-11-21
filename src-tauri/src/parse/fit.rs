@@ -57,7 +57,8 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<ParsedTrack>> {
             _ => {}
         }
     }
-    Ok(vec![ParsedTrack { name: None, description: sport, points }])
+    let activity = sport.as_deref().and_then(crate::activity::normalize);
+    Ok(vec![ParsedTrack { name: None, description: None, activity, points }])
 }
 
 fn field<'a>(rec: &'a FitDataRecord, name: &str) -> Option<&'a Value> {

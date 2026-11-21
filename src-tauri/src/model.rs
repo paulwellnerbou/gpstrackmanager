@@ -62,5 +62,7 @@ impl Points {
 pub struct ParsedTrack {
     pub name: Option<String>,
     pub description: Option<String>,
+    /// Normalised activity key (see `activity::normalize`), if the file states one.
+    pub activity: Option<String>,
     pub points: Points,
 }

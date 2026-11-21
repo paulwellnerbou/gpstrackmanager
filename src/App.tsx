@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, displayName, type FileProblem, type Line, type Root, type ScanProgress, type TrackSummary } from "./api";
+import {
+  activityOf,
+  api,
+  displayName,
+  type FileProblem,
+  type Line,
+  type PointTable,
+  type Root,
+  type ScanProgress,
+  type TrackSummary,
+} from "./api";
+import { DEFAULT_MARKER_OPTIONS, type MarkerOptions } from "./components/trackMarkers";
+import { MarkerMenu } from "./components/MarkerMenu";
 import { Sidebar } from "./components/Sidebar";
 import { MapView } from "./components/MapView";
 import { Profile } from "./components/Profile";
@@ -19,7 +31,9 @@ export default function App() {
   const [showBaseMap, setShowBaseMap] = useState(true);
   const [showAll, setShowAll] = useState(true);
   const [cursor, setCursor] = useState<[number, number] | null>(null);
-  const [highlight, setHighlight] = useState<[number, number][]>([]);
+  const [table, setTable] = useState<PointTable | null>(null);
+  const [pointSelection, setPointSelection] = useState<number[]>([]);
+  const [markerOptions, setMarkerOptions] = useState<MarkerOptions>(loadMarkerOptions);
   const [focus, setFocus] = useState<{ bbox: [number, number, number, number]; seq: number } | null>(null);
   // Bumped after point edits so map, profile and point list reload the track's data.
   const [version, setVersion] = useState(0);
@@ -61,13 +75,41 @@ export default function App() {
     const q = query.trim().toLowerCase();
     if (!q) return tracks;
     return tracks.filter((t) =>
-      [displayName(t), t.filePath, t.description ?? "", t.fileDescription ?? "", ...t.tags].some((s) =>
-        s.toLowerCase().includes(q),
-      ),
+      [
+        displayName(t),
+        t.filePath,
+        t.description ?? "",
+        t.fileDescription ?? "",
+        activityOf(t)?.label ?? "",
+        ...t.tags,
+      ].some((s) => s.toLowerCase().includes(q)),
     );
   }, [tracks, query]);
 
   const selected = tracks.find((t) => t.id === selectedId) ?? null;
+
+  // One copy of the selected track's points, shared by the point list and the map markers.
+  useEffect(() => {
+    let cancelled = false;
+    setTable(null);
+    if (selectedId == null) return;
+    api
+      .pointTable(selectedId)
+      .then((t) => !cancelled && setTable(t))
+      .catch((e) => setError(String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, version]);
+
+  const changeMarkerOptions = (o: MarkerOptions) => {
+    setMarkerOptions(o);
+    try {
+      localStorage.setItem(MARKER_OPTIONS_KEY, JSON.stringify(o));
+    } catch {
+      // Preferences are a convenience; without storage they just reset on restart.
+    }
+  };
 
   const patchTrack = (id: number, patch: Partial<TrackSummary>) =>
     setTracks((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
@@ -91,6 +133,7 @@ export default function App() {
         <div className="toolbar">
           <strong>{selected ? displayName(selected) : `${filtered.length} tracks`}</strong>
           <div className="toggles">
+            <MarkerMenu options={markerOptions} onChange={changeMarkerOptions} />
             <label title="Show every track in the list (search narrows it down)">
               <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> All tracks
             </label>
@@ -112,7 +155,9 @@ export default function App() {
           showBaseMap={showBaseMap}
           showAll={showAll}
           cursor={cursor}
-          highlight={highlight}
+          table={table}
+          pointSelection={pointSelection}
+          markerOptions={markerOptions}
           focus={focus}
           version={version}
           onSelect={setSelectedId}
@@ -132,9 +177,13 @@ export default function App() {
             patchTrack(selected.id, { tags });
             setAllTags(await api.listTags());
           }}
-          version={version}
+          onSetActivity={async (activity) => {
+            await api.setTrackActivity(selected.id, activity);
+            patchTrack(selected.id, { activity });
+          }}
+          table={table}
           onHover={setCursor}
-          onHighlight={setHighlight}
+          onSelectionChange={setPointSelection}
           onZoomTo={(bbox) => setFocus((f) => ({ bbox, seq: (f?.seq ?? 0) + 1 }))}
           onEdited={async () => {
             await reloadCatalog();
@@ -145,4 +194,16 @@ export default function App() {
       )}
     </div>
   );
+}
+
+const MARKER_OPTIONS_KEY = "markerOptions";
+
+function loadMarkerOptions(): MarkerOptions {
+  try {
+    const raw = localStorage.getItem(MARKER_OPTIONS_KEY);
+    if (raw) return { ...DEFAULT_MARKER_OPTIONS, ...JSON.parse(raw) };
+  } catch {
+    // Fall through to defaults.
+  }
+  return DEFAULT_MARKER_OPTIONS;
 }

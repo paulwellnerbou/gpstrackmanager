@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { api, displayName, formatDate, formatDistance, formatDuration, type TrackSummary } from "../api";
+import {
+  ACTIVITIES,
+  api,
+  displayName,
+  formatDate,
+  formatDistance,
+  formatDuration,
+  type PointTable,
+  type TrackSummary,
+} from "../api";
 import { PointList } from "./PointList";
 
 interface Props {
@@ -7,15 +16,16 @@ interface Props {
   allTags: string[];
   onSaveMeta: (title: string, description: string) => void;
   onSetTags: (tags: string[]) => void;
-  version: number;
+  onSetActivity: (activity: string | null) => void;
+  table: PointTable | null;
   onHover: (lonLat: [number, number] | null) => void;
-  onHighlight: (points: [number, number][]) => void;
+  onSelectionChange: (sortedIndices: number[]) => void;
   onZoomTo: (bbox: [number, number, number, number]) => void;
   onEdited: () => void;
   onError: (message: string) => void;
 }
 
-export function Details({ track, allTags, onSaveMeta, onSetTags, ...edit }: Props) {
+export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, ...edit }: Props) {
   const [title, setTitle] = useState(track.title ?? "");
   const [description, setDescription] = useState(track.description ?? "");
   const [tagInput, setTagInput] = useState("");
@@ -57,6 +67,17 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, ...edit }: Prop
         <label>
           Title
           <input value={title} placeholder={fallbackName} onChange={(e) => setTitle(e.target.value)} onBlur={save} />
+        </label>
+        <label>
+          Activity
+          <select value={track.activity ?? ""} onChange={(e) => onSetActivity(e.target.value || null)}>
+            <option value="">{fileActivityLabel(track.fileActivity)}</option>
+            {ACTIVITIES.map((a) => (
+              <option key={a.key} value={a.key}>
+                {a.icon} {a.label}
+              </option>
+            ))}
+          </select>
         </label>
         <label>
           Description
@@ -145,4 +166,9 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, ...edit }: Prop
       <PointList track={track} {...edit} />
     </aside>
   );
+}
+
+function fileActivityLabel(key: string | null) {
+  const a = ACTIVITIES.find((x) => x.key === key);
+  return a ? `${a.icon} ${a.label} (from file)` : "Not set";
 }

@@ -34,6 +34,7 @@ pub struct TrackBlobs {
 pub struct ProcessedTrack {
     pub name: Option<String>,
     pub description: Option<String>,
+    pub activity: Option<String>,
     pub stats: Stats,
     pub blobs: TrackBlobs,
 }
@@ -166,5 +167,5 @@ pub fn process_track(mut t: ParsedTrack) -> ProcessedTrack {
         segs: codec::encode_u32(&p.seg_starts),
         overview,
     };
-    ProcessedTrack { name: t.name, description: t.description, stats, blobs }
+    ProcessedTrack { name: t.name, description: t.description, activity: t.activity, stats, blobs }
 }
