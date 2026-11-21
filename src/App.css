@@ -295,6 +295,9 @@ textarea {
 main {
   display: grid;
   grid-template-rows: auto 1fr 170px;
+  /* An auto column would grow to the profile plot's pixel width and never shrink back,
+     holding the map wide when the column narrows. */
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   position: relative;
@@ -306,6 +309,13 @@ main {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
+  gap: 12px;
+}
+.toolbar strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .toolbar label {
   display: flex;
@@ -314,7 +324,13 @@ main {
 }
 .toolbar .toggles {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 16px;
+  /* The title ellipsizes first; the toggles wrap only once they alone overflow. */
+  flex-shrink: 0;
+  max-width: 100%;
+  white-space: nowrap;
 }
 .toolbar input {
   width: auto;
