@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { usePresence } from "../presence";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { api, type TrackSummary } from "../api";
@@ -79,10 +80,15 @@ export function Profile({ track, version, onCursor }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [track?.id, version, scheme]);
 
+  const noTrack = usePresence(!track);
+  const noEle = usePresence(!!track && empty);
+
   return (
     <div className="profile" onMouseLeave={() => onCursor(null)}>
-      {!track && <div className="hint">Select a track to see its elevation profile.</div>}
-      {track && empty && <div className="hint">This track has no elevation data.</div>}
+      {noTrack.shown && (
+        <div className={noTrack.closing ? "hint closing" : "hint"}>Select a track to see its elevation profile.</div>
+      )}
+      {noEle.shown && <div className={noEle.closing ? "hint closing" : "hint"}>This track has no elevation data.</div>}
       <div ref={box} className="profile-plot" />
     </div>
   );

@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   activityOf,
@@ -25,6 +34,7 @@ import { MapView } from "./components/MapView";
 import { Profile } from "./components/Profile";
 import { Details } from "./components/Details";
 import { PaneResizer } from "./components/PaneResizer";
+import { usePresence } from "./presence";
 import "./App.css";
 
 export default function App() {
@@ -284,9 +294,15 @@ export default function App() {
     savePrefs(MAP_OPTIONS_KEY, o);
   };
 
+  // The details pane stays for its slide-out after the selection is cleared.
+  const detailsPane = usePresence(selected, PANE_MS);
+  const detailsClosing = detailsPane.closing;
+  const mapMenuShown = usePresence(mapMenu);
+  const errorShown = usePresence(error);
+
   // Stored widths are preferences; what is shown is limited so the map keeps MAP_MIN when
   // the window is small or the details pane opens, and the details pane gives way last.
-  const hasDetails = selected != null;
+  const hasDetails = detailsPane.shown != null;
   const windowWidth = useWindowWidth(sidebarWidth + (hasDetails ? detailsWidth : 0) + MAP_MIN);
   const room = windowWidth - MAP_MIN;
   const shownDetails = hasDetails ? clampWidth(detailsWidth, DETAILS_MIN, room - SIDEBAR_MIN) : 0;
@@ -305,10 +321,60 @@ export default function App() {
   const patchTrack = (id: number, patch: Partial<TrackSummary>) =>
     setTracks((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
 
+  // Kept as an element so the closing pane shows what it showed last, not an empty track.
+  const detailsElement = useRef<ReactNode>(null);
+  if (selected) {
+    detailsElement.current = (
+      <Details
+        track={selected}
+        allTags={allTags}
+        onSaveMeta={async (title, description) => {
+          await api.updateTrackMeta(selected.id, title, description);
+          patchTrack(selected.id, { title: title.trim() || null, description: description.trim() || null });
+        }}
+        onSetTags={async (tags) => {
+          await api.setTrackTags(selected.id, tags);
+          patchTrack(selected.id, { tags });
+          setAllTags(await api.listTags());
+        }}
+        onSetActivity={async (activity) => {
+          await api.setTrackActivity(selected.id, activity);
+          patchTrack(selected.id, { activity });
+        }}
+        table={table}
+        fileTracks={fileTracks}
+        waypoints={waypoints}
+        focusedWaypoint={focusedWaypoint}
+        onSelectTrack={setSelectedId}
+        onFocusWaypoint={setFocusedWaypoint}
+        onHover={hoverCursor.set}
+        selection={selection}
+        onSelectionChange={setSelection}
+        reveal={reveal}
+        onZoomTo={(bbox) => setFocus((f) => ({ bbox, seq: (f?.seq ?? 0) + 1 }))}
+        onPanTo={(center) => setFocus((f) => ({ center, seq: (f?.seq ?? 0) + 1 }))}
+        locked={editPending}
+        onBeginEdit={beginEdit}
+        onEdited={onEdited}
+        onError={editFailed}
+        lastEdit={lastEdit}
+        lastEditTrack={lastEditTrack}
+        onUndo={undo}
+      />
+    );
+  } else if (!hasDetails) detailsElement.current = null;
+
   return (
     <div
-      className={`app ${selected ? "with-details" : ""}`}
-      style={{ "--sidebar-w": `${shownSidebar}px`, "--details-w": `${shownDetails}px` } as CSSProperties}
+      className={`app${detailsClosing ? " details-closing" : ""}`}
+      style={
+        {
+          "--sidebar-w": `${shownSidebar}px`,
+          // The column shrinks to nothing while the closing pane keeps its width.
+          "--details-w": `${detailsClosing ? 0 : shownDetails}px`,
+          "--details-pane-w": `${shownDetails}px`,
+        } as CSSProperties
+      }
     >
       <Sidebar
         roots={roots}
@@ -349,9 +415,9 @@ export default function App() {
             </label>
           </div>
         </div>
-        {error && (
-          <div className="error" onClick={() => setError(null)}>
-            {error}
+        {errorShown.shown && (
+          <div className={errorShown.closing ? "error closing" : "error"} onClick={() => setError(null)}>
+            {errorShown.shown}
           </div>
         )}
         <MapView
@@ -375,10 +441,12 @@ export default function App() {
           onPointMenu={(x, y) => !editPending && setMapMenu({ x, y })}
           locked={editPending}
         />
-        {mapMenu && selected && table && (
+        {mapMenuShown.shown && selected && table && (
           <PointMenu
-            x={mapMenu.x}
-            y={mapMenu.y}
+            key={`${mapMenuShown.shown.x},${mapMenuShown.shown.y}`}
+            x={mapMenuShown.shown.x}
+            y={mapMenuShown.shown.y}
+            closing={mapMenuShown.closing}
             trackId={selected.id}
             table={table}
             selection={pointSelection}
@@ -403,44 +471,7 @@ export default function App() {
           onChange={resizeDetails}
         />
       )}
-      {selected && (
-        <Details
-          track={selected}
-          allTags={allTags}
-          onSaveMeta={async (title, description) => {
-            await api.updateTrackMeta(selected.id, title, description);
-            patchTrack(selected.id, { title: title.trim() || null, description: description.trim() || null });
-          }}
-          onSetTags={async (tags) => {
-            await api.setTrackTags(selected.id, tags);
-            patchTrack(selected.id, { tags });
-            setAllTags(await api.listTags());
-          }}
-          onSetActivity={async (activity) => {
-            await api.setTrackActivity(selected.id, activity);
-            patchTrack(selected.id, { activity });
-          }}
-          table={table}
-          fileTracks={fileTracks}
-          waypoints={waypoints}
-          focusedWaypoint={focusedWaypoint}
-          onSelectTrack={setSelectedId}
-          onFocusWaypoint={setFocusedWaypoint}
-          onHover={hoverCursor.set}
-          selection={selection}
-          onSelectionChange={setSelection}
-          reveal={reveal}
-          onZoomTo={(bbox) => setFocus((f) => ({ bbox, seq: (f?.seq ?? 0) + 1 }))}
-          onPanTo={(center) => setFocus((f) => ({ center, seq: (f?.seq ?? 0) + 1 }))}
-          locked={editPending}
-          onBeginEdit={beginEdit}
-          onEdited={onEdited}
-          onError={editFailed}
-          lastEdit={lastEdit}
-          lastEditTrack={lastEditTrack}
-          onUndo={undo}
-        />
-      )}
+      {hasDetails && detailsElement.current}
     </div>
   );
 }
@@ -505,6 +536,8 @@ const SIDEBAR_MIN = 200;
 // The point table's fixed columns plus a full "lat, lon" pair need about this much.
 const DETAILS_MIN = 310;
 const MAP_MIN = 320;
+/** Matches `--pane` in App.css: how long the details pane takes to slide in or out. */
+const PANE_MS = 200;
 
 const clampWidth = (w: number, min: number, max: number) => Math.max(min, Math.min(max, w));
 

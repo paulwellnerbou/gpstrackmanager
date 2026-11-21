@@ -16,6 +16,7 @@ import {
 } from "../api";
 import { TrackTree } from "./TrackTree";
 import { CleanupPanel } from "./CleanupPanel";
+import { Collapse } from "../presence";
 import { EMPTY_SELECTION, type PointSelection } from "../pointEditing";
 
 interface Props {
@@ -78,7 +79,7 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
   return (
     <aside className="details">
       <div className="details-top">
-        {cleaningUp ? (
+        <Collapse show={cleaningUp}>
           <CleanupPanel
             trackId={track.id}
             table={edit.table}
@@ -93,7 +94,8 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
               edit.onSelectionChange(EMPTY_SELECTION);
             }}
           />
-        ) : (
+        </Collapse>
+        <Collapse show={!cleaningUp}>
           <div className="track-actions">
             <button
               onClick={() => setCleaningUp(true)}
@@ -102,7 +104,7 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
               Clean up track…
             </button>
           </div>
-        )}
+        </Collapse>
         <label>
           Title
           <input value={title} placeholder={fallbackName} onChange={(e) => setTitle(e.target.value)} onBlur={save} />
@@ -189,7 +191,7 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
             {track.missing && <strong className="missing"> missing</strong>}
           </dd>
         </dl>
-        {(track.edited || lastEdit) && (
+        <Collapse show={!!(track.edited || lastEdit)}>
           <div className="edited-note">
             Points edited in the catalog; the file is unchanged.{" "}
             {lastEdit && (
@@ -223,7 +225,7 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
               Revert to file
             </button>
           </div>
-        )}
+        </Collapse>
       </div>
       <div className="open-in">
         <button onClick={() => call(() => api.openInGoogleEarth(track.id))} title="Export as KML and open it">

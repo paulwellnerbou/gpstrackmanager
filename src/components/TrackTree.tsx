@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePresence } from "../presence";
 import {
   activityOf,
   api,
@@ -95,6 +96,8 @@ export function TrackTree(p: Props) {
   const [height, setHeight] = useState(300);
   const [menu, setMenu] = useState<Menu | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
+  const { shown: shownMenu, closing: menuClosing } = usePresence(menu);
+  const loadingHint = usePresence(!table);
   const box = useRef<HTMLDivElement>(null);
   const n = table?.length ?? 0;
 
@@ -311,14 +314,14 @@ export function TrackTree(p: Props) {
 
   const twisty = (key: string) => (
     <button
-      className="twisty"
+      className={collapsed.has(key) ? "twisty" : "twisty open"}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
         toggle(key);
       }}
     >
-      {collapsed.has(key) ? "▸" : "▾"}
+      <span className="caret">▾</span>
     </button>
   );
 
@@ -401,11 +404,11 @@ export function TrackTree(p: Props) {
           top,
           <>
             <button
-              className="twisty"
+              className={open ? "twisty open" : "twisty"}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={activate}
             >
-              {open ? "▾" : "▸"}
+              <span className="caret">▾</span>
             </button>
             <span className="tree-icon">{icon}</span>
             <span className="tree-title">{displayName(t)}</span>
@@ -475,7 +478,7 @@ export function TrackTree(p: Props) {
     for (let row = from; row < to; row++) rows.push(renderBlockRow(b, row - offsets[bi], row * ROW));
   }
 
-  const menuSeg = menu?.target === "seg" ? segments[menu.seg] : null;
+  const menuSeg = shownMenu?.target === "seg" ? segments[shownMenu.seg] : null;
 
   return (
     <div className="points">
@@ -513,13 +516,15 @@ export function TrackTree(p: Props) {
           }
         }}
       >
-        {!table && <div className="hint">Loading points…</div>}
+        {loadingHint.shown && <div className={loadingHint.closing ? "hint closing" : "hint"}>Loading points…</div>}
         <div style={{ height: totalRows * ROW, position: "relative" }}>{rows}</div>
       </div>
-      {menu?.target === "points" && table && (
+      {shownMenu?.target === "points" && table && (
         <PointMenu
-          x={menu.x}
-          y={menu.y}
+          key={`${shownMenu.x},${shownMenu.y}`}
+          x={shownMenu.x}
+          y={shownMenu.y}
+          closing={menuClosing}
           trackId={track.id}
           table={table}
           selection={sorted}
@@ -530,9 +535,9 @@ export function TrackTree(p: Props) {
           onError={p.onError}
         />
       )}
-      {menu?.target === "seg" && (
-        <MenuBox x={menu.x} y={menu.y}>
-          {menuSeg && menu.target === "seg" && (
+      {shownMenu?.target === "seg" && (
+        <MenuBox key={`${shownMenu.x},${shownMenu.y}`} x={shownMenu.x} y={shownMenu.y} closing={menuClosing}>
+          {menuSeg && (
             <>
               <button
                 disabled={menuSeg[1] - menuSeg[0] < 2 || n - (menuSeg[1] - menuSeg[0]) < 2}
@@ -542,12 +547,12 @@ export function TrackTree(p: Props) {
                 Make separate track
               </button>
               <button
-                disabled={menu.seg + 1 >= segments.length}
-                onClick={() => run(() => api.joinTrackSegment(track.id, segments[menu.seg + 1][0]))}
+                disabled={shownMenu.seg + 1 >= segments.length}
+                onClick={() => run(() => api.joinTrackSegment(track.id, segments[shownMenu.seg + 1][0]))}
               >
                 Join with next segment
               </button>
-              <button onClick={() => deletePoints(range(menuSeg[0], menuSeg[1]), `segment ${menu.seg + 1}`)}>
+              <button onClick={() => deletePoints(range(menuSeg[0], menuSeg[1]), `segment ${shownMenu.seg + 1}`)}>
                 Delete segment
               </button>
               <hr />

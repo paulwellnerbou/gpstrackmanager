@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { usePresence } from "../presence";
 import { Marker, type Map as MapLibreMap } from "maplibre-gl";
 
 // Photon (OSM data, run by komoot) allows search-as-you-type without a key;
@@ -176,6 +177,9 @@ export function GeoSearch({ map }: { map: MapLibreMap | null }) {
 
   const { places, error } = list;
   const showList = open && (places.length > 0 || error != null);
+  // While fading out, the list keeps the results it had (clearing empties them at once).
+  const listShown = usePresence(showList && list);
+  const clearShown = usePresence(query !== "");
 
   const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -226,9 +230,9 @@ export function GeoSearch({ map }: { map: MapLibreMap | null }) {
           onBlur={() => setOpen(false)}
           onKeyDown={onKey}
         />
-        {query && (
+        {clearShown.shown && (
           <button
-            className="geo-search-clear"
+            className={clearShown.closing ? "geo-search-clear closing" : "geo-search-clear"}
             title="Clear"
             aria-label="Clear search"
             onMouseDown={(e) => e.preventDefault()}
@@ -238,14 +242,18 @@ export function GeoSearch({ map }: { map: MapLibreMap | null }) {
           </button>
         )}
       </div>
-      {showList && (
-        <ul className="geo-search-results" id={listId} role="listbox">
-          {error && (
+      {listShown.shown && (
+        <ul
+          className={listShown.closing ? "geo-search-results closing" : "geo-search-results"}
+          id={listId}
+          role="listbox"
+        >
+          {listShown.shown.error && (
             <li className="geo-search-error" role="alert">
-              {error}
+              {listShown.shown.error}
             </li>
           )}
-          {places.map((p, i) => (
+          {listShown.shown.places.map((p, i) => (
             <li
               key={`${p.center[0]},${p.center[1]},${i}`}
               id={optionId(i)}
