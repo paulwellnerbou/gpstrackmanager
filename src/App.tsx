@@ -16,7 +16,8 @@ import {
 import { DEFAULT_MARKER_OPTIONS, type MarkerOptions } from "./components/trackMarkers";
 import { MarkerMenu } from "./components/MarkerMenu";
 import { PointMenu } from "./components/PointMenu";
-import { EMPTY_SELECTION, type PointSelection } from "./pointEditing";
+import { EMPTY_SELECTION, sortedIndices, type PointSelection } from "./pointEditing";
+import { hoverCursor } from "./hoverCursor";
 import { Sidebar } from "./components/Sidebar";
 import { MapView } from "./components/MapView";
 import { Profile } from "./components/Profile";
@@ -34,15 +35,14 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [showBaseMap, setShowBaseMap] = useState(true);
   const [showAll, setShowAll] = useState(true);
-  const [cursor, setCursor] = useState<[number, number] | null>(null);
   const [table, setTable] = useState<PointTable | null>(null);
-  const [waypoints, setWaypoints] = useState<WaypointRow[]>([]);
+  const [fileWaypoints, setFileWaypoints] = useState<{ fileId: number; rows: WaypointRow[] } | null>(null);
   const [focusedWaypoint, setFocusedWaypoint] = useState<number | null>(null);
   const [selection, setSelection] = useState<PointSelection>(EMPTY_SELECTION);
   const [reveal, setReveal] = useState<{ index: number; seq: number } | null>(null);
   const [mapMenu, setMapMenu] = useState<{ x: number; y: number } | null>(null);
   const closeMapMenu = useCallback(() => setMapMenu(null), []);
-  const pointSelection = useMemo(() => [...selection.set].sort((a, b) => a - b), [selection]);
+  const pointSelection = useMemo(() => sortedIndices(selection.set), [selection]);
   const [markerOptions, setMarkerOptions] = useState<MarkerOptions>(loadMarkerOptions);
   const [focus, setFocus] = useState<MapFocus | null>(null);
   // Bumped after point edits so map, profile and point list reload the track's data.
@@ -68,19 +68,47 @@ export default function App() {
 
   const reloadRoots = useCallback(() => api.listRoots().then(setRoots), []);
 
+  // One sync at a time (the backend refuses a second); roots synced meanwhile wait here.
+  const scanQueue = useRef<number[]>([]);
+  const scanRunning = useRef(false);
+  const startScan = useCallback((rootId: number) => {
+    if (scanRunning.current) {
+      if (!scanQueue.current.includes(rootId)) scanQueue.current.push(rootId);
+      return;
+    }
+    scanRunning.current = true;
+    // Shown as running at once, so the Sync button is disabled before the first event.
+    setScan({ ...SCAN_STARTING, rootId });
+    api.scanRoot(rootId).catch((e) => scanEnded(String(e)));
+  }, []);
+  const scanEnded = useCallback(
+    (error?: string) => {
+      scanRunning.current = false;
+      if (error) {
+        setError(error);
+        setScan(null);
+      }
+      const next = scanQueue.current.shift();
+      if (next != null) startScan(next);
+    },
+    [startScan],
+  );
+
   useEffect(() => {
     reloadRoots();
     reloadCatalog();
     const unlisten = [
       listen<ScanProgress>("scan-progress", (e) => {
         setScan(e.payload);
+        if (e.payload.phase !== "done") return;
         // A rescan may have replaced the selected track's points and waypoints.
-        if (e.payload.phase === "done") reloadCatalog().then(() => setVersion((v) => v + 1));
+        reloadCatalog().then(() => setVersion((v) => v + 1));
+        scanEnded();
       }),
-      listen<string>("scan-error", (e) => setError(e.payload)),
+      listen<string>("scan-error", (e) => scanEnded(e.payload)),
     ];
     return () => unlisten.forEach((u) => u.then((f) => f()));
-  }, [reloadCatalog, reloadRoots]);
+  }, [reloadCatalog, reloadRoots, scanEnded]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -156,14 +184,16 @@ export default function App() {
   }, [selectedId, version]);
 
   const fileId = selected?.fileId ?? null;
+  // Tagged with their file: after an edit the old list stays up until the reload arrives,
+  // while another file's list is never shown for this one.
+  const waypoints = fileWaypoints?.fileId === fileId ? fileWaypoints.rows : NO_WAYPOINTS;
+  useEffect(() => setFocusedWaypoint(null), [fileId]);
   useEffect(() => {
     let cancelled = false;
-    setWaypoints([]);
-    setFocusedWaypoint(null);
     if (fileId == null) return;
     api
       .listFileWaypoints(fileId)
-      .then((w) => !cancelled && setWaypoints(w))
+      .then((rows) => !cancelled && setFileWaypoints({ fileId, rows }))
       .catch((e) => setError(String(e)));
     return () => {
       cancelled = true;
@@ -208,7 +238,7 @@ export default function App() {
         onQuery={setQuery}
         onSelect={setSelectedId}
         onRootsChanged={reloadRoots}
-        onScan={(id) => api.scanRoot(id).catch((e) => setError(String(e)))}
+        onScan={startScan}
         onImported={reloadCatalog}
         onError={setError}
       />
@@ -237,7 +267,6 @@ export default function App() {
           selected={selected}
           showBaseMap={showBaseMap}
           showAll={showAll}
-          cursor={cursor}
           table={table}
           pointSelection={pointSelection}
           markerOptions={markerOptions}
@@ -266,7 +295,7 @@ export default function App() {
             onError={editFailed}
           />
         )}
-        <Profile track={selected} version={version} onCursor={setCursor} />
+        <Profile track={selected} version={version} onCursor={hoverCursor.set} />
       </main>
       {selected && (
         <Details
@@ -291,7 +320,7 @@ export default function App() {
           focusedWaypoint={focusedWaypoint}
           onSelectTrack={setSelectedId}
           onFocusWaypoint={setFocusedWaypoint}
-          onHover={setCursor}
+          onHover={hoverCursor.set}
           selection={selection}
           onSelectionChange={setSelection}
           reveal={reveal}
@@ -307,6 +336,19 @@ export default function App() {
   );
 }
 
+const NO_WAYPOINTS: WaypointRow[] = [];
+const SCAN_STARTING: ScanProgress = {
+  rootId: 0,
+  phase: "listing",
+  total: 0,
+  done: 0,
+  current: null,
+  tracks: 0,
+  errors: 0,
+  unsupported: 0,
+  missing: 0,
+  elapsedMs: 0,
+};
 const MARKER_OPTIONS_KEY = "markerOptions";
 
 function loadMarkerOptions(): MarkerOptions {

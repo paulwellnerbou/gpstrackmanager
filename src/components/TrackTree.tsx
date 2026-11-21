@@ -16,12 +16,19 @@ import {
   isSecondaryClick,
   isToggleKey,
   rangeSelection,
+  sortedIndices,
   type PointSelection,
 } from "../pointEditing";
-import { PointMenu } from "./PointMenu";
+import { MenuBox, PointMenu } from "./PointMenu";
 
 const ROW = 20;
 const OVERSCAN = 10;
+/**
+ * Segments are keyed by track and position, not by first point: deleting points shifts
+ * point numbers, and another track of the same file has its own segments.
+ */
+const segKey = (trackId: number, seg: number) => `seg:${trackId}:${seg}`;
+
 /** Long waypoint lists start collapsed so the points stay in view. */
 const WAYPOINTS_OPEN_MAX = 20;
 
@@ -90,8 +97,16 @@ export function TrackTree(p: Props) {
   const box = useRef<HTMLDivElement>(null);
   const n = table?.length ?? 0;
 
+  // Reset per file only: edits reload the waypoints and must not undo what the user collapsed.
+  const wpDefaultedFor = useRef<number | null>(null);
   useEffect(() => {
-    setCollapsed(waypoints.length > WAYPOINTS_OPEN_MAX ? new Set(["wp"]) : new Set());
+    setCollapsed(new Set());
+    wpDefaultedFor.current = null;
+  }, [track.fileId]);
+  useEffect(() => {
+    if (!waypoints.length || wpDefaultedFor.current === track.fileId) return;
+    wpDefaultedFor.current = track.fileId;
+    if (waypoints.length > WAYPOINTS_OPEN_MAX) setCollapsed((c) => new Set(c).add("wp"));
   }, [track.fileId, waypoints.length]);
 
   useEffect(() => {
@@ -103,7 +118,7 @@ export function TrackTree(p: Props) {
   }, []);
 
   const selection = p.selection.set;
-  const sorted = useMemo(() => [...selection].sort((a, b) => a - b), [selection]);
+  const sorted = useMemo(() => sortedIndices(selection), [selection]);
 
   useEffect(() => {
     if (!menu) return;
@@ -146,7 +161,7 @@ export function TrackTree(p: Props) {
       if (segments.length > 1) {
         segments.forEach(([s, e], k) => {
           out.push({ kind: "seg", depth: inner, seg: k, start: s, end: e });
-          if (!collapsed.has(`seg:${s}`)) out.push({ kind: "points", depth: inner + 1, start: s, end: e });
+          if (!collapsed.has(segKey(track.id, k))) out.push({ kind: "points", depth: inner + 1, start: s, end: e });
         });
       } else {
         out.push({ kind: "points", depth: inner, start: 0, end: n });
@@ -206,9 +221,9 @@ export function TrackTree(p: Props) {
     const r = p.reveal;
     const el = box.current;
     if (!r || r.seq === revealed.current || !el) return;
-    const seg = segments.find(([s, e]) => r.index >= s && r.index < e);
-    if (segments.length > 1 && seg && collapsed.has(`seg:${seg[0]}`)) {
-      toggle(`seg:${seg[0]}`);
+    const k = segments.findIndex(([s, e]) => r.index >= s && r.index < e);
+    if (segments.length > 1 && k >= 0 && collapsed.has(segKey(track.id, k))) {
+      toggle(segKey(track.id, k));
       return;
     }
     revealed.current = r.seq;
@@ -364,7 +379,7 @@ export function TrackTree(p: Props) {
       }
       case "seg": {
         const t = table!;
-        const key = `seg:${b.start}`;
+        const key = segKey(track.id, b.seg);
         const dist = t.dist[b.end - 1] - t.dist[b.start];
         const segSelected = sorted.length === b.end - b.start && sorted[0] === b.start;
         return header(
@@ -472,10 +487,11 @@ export function TrackTree(p: Props) {
         />
       )}
       {menu?.target === "seg" && (
-        <div className="context-menu" style={{ left: menu.x, top: menu.y }} onMouseDown={(e) => e.stopPropagation()}>
+        <MenuBox x={menu.x} y={menu.y}>
           {menuSeg && menu.target === "seg" && (
             <>
               <button
+                disabled={menuSeg[1] - menuSeg[0] < 2 || n - (menuSeg[1] - menuSeg[0]) < 2}
                 onClick={() => run(() => api.extractTrackRange(track.id, menuSeg[0], menuSeg[1]))}
                 title="The segment becomes a track of its own; this track keeps the other segments"
               >
@@ -494,7 +510,7 @@ export function TrackTree(p: Props) {
               <button onClick={() => zoomTo(range(menuSeg[0], menuSeg[1]))}>Zoom to segment</button>
             </>
           )}
-        </div>
+        </MenuBox>
       )}
     </div>
   );

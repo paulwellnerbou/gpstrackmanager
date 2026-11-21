@@ -210,6 +210,12 @@ pub fn hash_known(conn: &Connection, hash: &str) -> Result<bool> {
     Ok(conn.query_row("SELECT 1 FROM files WHERE hash = ?1 LIMIT 1", [hash], |_| Ok(())).optional()?.is_some())
 }
 
+pub fn all_hashes(conn: &Connection) -> Result<std::collections::HashSet<String>> {
+    let mut st = conn.prepare("SELECT hash FROM files WHERE hash IS NOT NULL")?;
+    let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }

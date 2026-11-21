@@ -1,4 +1,6 @@
 :root {
+  /* Lets checkboxes, scrollbars and selects follow the OS theme too. */
+  color-scheme: light dark;
   --bg: #fafaf8;
   --panel: #ffffff;
   --border: #e3e1dc;
@@ -160,17 +162,24 @@ textarea {
   overflow-y: auto;
   flex: 1;
 }
-.track-list li {
+.track-list:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.list-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  overflow: hidden;
   padding: 7px 12px;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 48px;
 }
-.track-list li:hover {
+.list-row:hover {
   background: var(--bg);
 }
-.track-list li.selected {
+.list-row.selected {
   background: var(--accent-soft);
 }
 .track-name {
@@ -217,6 +226,9 @@ textarea {
 }
 .track-tags {
   margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .tag-input {
   flex: 1;

@@ -23,12 +23,19 @@ pub fn compute_importance(lat: &[f64], lon: &[f64], segments: &[(usize, usize)])
                 continue;
             }
             let (mut best, mut best_d) = (a + 1, -1.0f64);
+            let mid = (a + b) / 2;
             for k in a + 1..b {
                 let d = dist_to_segment(xy[k], xy[a], xy[b]);
-                if d > best_d {
+                // Ties go to the point nearest the middle: on runs of identical fixes
+                // (a logger lying still) always taking the first would make this O(n²).
+                if d > best_d || (d == best_d && k.abs_diff(mid) < best.abs_diff(mid)) {
                     best_d = d;
                     best = k;
                 }
+            }
+            if best_d <= 0.0 {
+                // Everything in between lies on the line and keeps importance 0.
+                continue;
             }
             // Clamping to the parent keeps the hierarchy monotone: a point never
             // survives a tolerance that already removed the point that split it off.
@@ -61,5 +68,23 @@ mod tests {
         assert!(imp[0].is_infinite() && imp[4].is_infinite());
         assert!(imp[3] > 0.0, "the peak matters");
         assert!(imp[1] < 1e-9, "collinear point is irrelevant");
+    }
+
+    #[test]
+    fn stationary_runs_are_fast() {
+        let n = 400_000;
+        let mut lat = vec![50.0; n];
+        let mut lon = vec![8.0; n];
+        // A walk, then a long stationary stretch with tiny jitter, then a walk.
+        for i in 0..1000 {
+            lat[i] = 50.0 + i as f64 * 1e-4;
+            lat[n - 1 - i] = 49.0 - i as f64 * 1e-4;
+        }
+        for i in (1000..n - 1000).step_by(2) {
+            lon[i] = 8.0 + 1e-7;
+        }
+        let t = std::time::Instant::now();
+        compute_importance(&lat, &lon, &[(0, n)]);
+        assert!(t.elapsed().as_secs_f64() < 2.0, "took {:?}", t.elapsed());
     }
 }

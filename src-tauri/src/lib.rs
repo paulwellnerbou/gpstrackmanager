@@ -12,23 +12,74 @@ pub mod parse;
 pub mod process;
 pub mod scan;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
+use anyhow::{Result, anyhow, bail};
 use rusqlite::Connection;
 use tauri::ipc::Response;
-use tauri::{Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
+
+/// (track id, SQLite data_version, own write count)
+type CacheKey = (i64, i64, u64);
 
 struct AppState {
     db_path: PathBuf,
     db: Mutex<Connection>,
+    /// Bumped by every write through `db`. SQLite's data_version only changes for other
+    /// connections' commits (the scanner's), so both together tell whether a cached track is current.
+    writes: AtomicU64,
+    /// The selected track, so panning does not decode it from the database each time.
+    track_cache: Mutex<Option<(CacheKey, Arc<catalog::TrackData>)>>,
+    scanning: Arc<AtomicBool>,
+    device_hashes: Mutex<device::HashCache>,
+    /// Files the last device check found; the only ones an import accepts.
+    device_files: Mutex<HashSet<String>>,
+    /// Held for a whole device import: two imports at once would both find a file new and copy it twice.
+    importing: Mutex<()>,
+}
+
+impl AppState {
+    fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.db.lock().unwrap()
+    }
+
+    fn write<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+        let mut conn = self.conn();
+        let r = f(&mut conn);
+        // Bumped before the lock is released, so no reader can pair the new data with the old count.
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        r
+    }
+
+    fn track(&self, id: i64) -> Result<Arc<catalog::TrackData>> {
+        let conn = self.conn();
+        let version: i64 = conn.query_row("PRAGMA data_version", [], |r| r.get(0))?;
+        let key = (id, version, self.writes.load(Ordering::SeqCst));
+        let mut cache = self.track_cache.lock().unwrap();
+        if let Some((k, data)) = &*cache
+            && *k == key
+        {
+            return Ok(data.clone());
+        }
+        let data = Arc::new(catalog::load_track_data(&conn, id)?);
+        *cache = Some((key, data.clone()));
+        Ok(data)
+    }
 }
 
 type CmdResult<T> = Result<T, String>;
 
-fn err(e: impl std::fmt::Display) -> String {
-    e.to_string()
+/// Runs a command on the blocking pool: synchronous Tauri commands run on the main
+/// thread and would freeze the window while they read files or the database.
+async fn blocking<T: Send + 'static>(app: AppHandle, f: impl FnOnce(&AppState) -> Result<T> + Send + 'static) -> CmdResult<T> {
+    tauri::async_runtime::spawn_blocking(move || f(&app.state::<AppState>()))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:#}"))
 }
 
 fn f64_bytes(v: &[f64]) -> Response {
@@ -36,98 +87,106 @@ fn f64_bytes(v: &[f64]) -> Response {
 }
 
 #[tauri::command]
-fn list_roots(state: State<AppState>) -> CmdResult<Vec<catalog::Root>> {
-    catalog::list_roots(&state.db.lock().unwrap()).map_err(err)
+async fn list_roots(app: AppHandle) -> CmdResult<Vec<catalog::Root>> {
+    blocking(app, |s| catalog::list_roots(&s.conn())).await
 }
 
 #[tauri::command]
-fn add_root(state: State<AppState>, path: String) -> CmdResult<catalog::Root> {
-    catalog::add_root(&state.db.lock().unwrap(), &path).map_err(err)
+async fn add_root(app: AppHandle, path: String) -> CmdResult<catalog::Root> {
+    blocking(app, move |s| s.write(|c| catalog::add_root(c, &path))).await
 }
 
 #[tauri::command]
-fn remove_root(state: State<AppState>, id: i64) -> CmdResult<()> {
-    catalog::remove_root(&mut state.db.lock().unwrap(), id).map_err(err)
+async fn remove_root(app: AppHandle, id: i64) -> CmdResult<()> {
+    blocking(app, move |s| s.write(|c| catalog::remove_root(c, id))).await
 }
 
 /// Runs in the background; progress arrives as `scan-progress` events.
 #[tauri::command]
-fn scan_root(app: tauri::AppHandle, state: State<AppState>, id: i64) -> CmdResult<()> {
-    let db_path = state.db_path.clone();
+async fn scan_root(app: AppHandle, id: i64) -> CmdResult<()> {
+    let s = app.state::<AppState>();
+    if s.scanning.swap(true, Ordering::SeqCst) {
+        return Err("A sync is already running.".into());
+    }
+    let (db_path, scanning) = (s.db_path.clone(), s.scanning.clone());
+    let app = app.clone();
     std::thread::spawn(move || {
         let emit = |p: &scan::ScanProgress| {
             let _ = app.emit("scan-progress", p);
         };
-        if let Err(e) = scan::scan_root(&db_path, id, &emit) {
-            let _ = app.emit("scan-error", e.to_string());
+        let result = scan::scan_root(&db_path, id, &emit);
+        scanning.store(false, Ordering::SeqCst);
+        if let Err(e) = result {
+            let _ = app.emit("scan-error", format!("{e:#}"));
         }
     });
     Ok(())
 }
 
 #[tauri::command]
-fn list_tracks(state: State<AppState>) -> CmdResult<Vec<catalog::TrackSummary>> {
-    catalog::list_tracks(&state.db.lock().unwrap()).map_err(err)
+async fn list_tracks(app: AppHandle) -> CmdResult<Vec<catalog::TrackSummary>> {
+    blocking(app, |s| catalog::list_tracks(&s.conn())).await
 }
 
 #[tauri::command]
-fn list_problem_files(state: State<AppState>) -> CmdResult<Vec<catalog::FileProblem>> {
-    catalog::list_problem_files(&state.db.lock().unwrap()).map_err(err)
+async fn list_problem_files(app: AppHandle) -> CmdResult<Vec<catalog::FileProblem>> {
+    blocking(app, |s| catalog::list_problem_files(&s.conn())).await
 }
 
 #[tauri::command]
-fn get_overview(state: State<AppState>) -> CmdResult<Response> {
-    catalog::overview(&state.db.lock().unwrap()).map(|v| f64_bytes(&v)).map_err(err)
+async fn get_overview(app: AppHandle) -> CmdResult<Response> {
+    blocking(app, |s| catalog::overview(&s.conn()).map(|v| f64_bytes(&v))).await
 }
 
 /// `zoom` selects the level of detail, `bbox` = `[min_lon, min_lat, max_lon, max_lat]`.
 #[tauri::command]
-fn get_track_points(state: State<AppState>, id: i64, zoom: f64, bbox: Option<[f64; 4]>) -> CmdResult<Response> {
-    let data = catalog::load_track_data(&state.db.lock().unwrap(), id).map_err(err)?;
-    let tol = geo::pixel_size_at_zoom(zoom) as f32 * 0.5;
-    Ok(f64_bytes(&geometry::select_points(&data, tol, bbox)))
+async fn get_track_points(app: AppHandle, id: i64, zoom: f64, bbox: Option<[f64; 4]>) -> CmdResult<Response> {
+    blocking(app, move |s| {
+        let data = s.track(id)?;
+        let tol = geo::pixel_size_at_zoom(zoom) as f32 * 0.5;
+        Ok(f64_bytes(&geometry::select_points(&data, tol, bbox)))
+    })
+    .await
 }
 
 #[tauri::command]
-fn get_track_profile(state: State<AppState>, id: i64, buckets: usize) -> CmdResult<Response> {
-    let data = catalog::load_track_data(&state.db.lock().unwrap(), id).map_err(err)?;
-    Ok(f64_bytes(&geometry::profile(&data, buckets.clamp(10, 20_000))))
+async fn get_track_profile(app: AppHandle, id: i64, buckets: usize) -> CmdResult<Response> {
+    blocking(app, move |s| Ok(f64_bytes(&geometry::profile(&*s.track(id)?, buckets.clamp(10, 20_000))))).await
 }
 
 #[tauri::command]
-fn get_track_point_table(state: State<AppState>, id: i64) -> CmdResult<Response> {
-    let data = catalog::load_track_data(&state.db.lock().unwrap(), id).map_err(err)?;
-    Ok(f64_bytes(&edit::point_table(&data)))
+async fn get_track_point_table(app: AppHandle, id: i64) -> CmdResult<Response> {
+    blocking(app, move |s| Ok(f64_bytes(&edit::point_table(&*s.track(id)?)))).await
 }
 
 #[tauri::command]
-fn delete_track_points(state: State<AppState>, id: i64, indices: Vec<u32>) -> CmdResult<()> {
-    edit::delete_points(&mut state.db.lock().unwrap(), id, &indices).map_err(err)
+async fn delete_track_points(app: AppHandle, id: i64, indices: Vec<u32>) -> CmdResult<()> {
+    blocking(app, move |s| s.write(|c| edit::delete_points(c, id, &indices))).await
 }
 
 #[tauri::command]
-fn split_track(state: State<AppState>, id: i64, at: u32) -> CmdResult<i64> {
-    edit::split(&mut state.db.lock().unwrap(), id, at).map_err(err)
+async fn split_track(app: AppHandle, id: i64, at: u32) -> CmdResult<i64> {
+    blocking(app, move |s| s.write(|c| edit::split(c, id, at))).await
 }
 
 #[tauri::command]
-fn extract_track_range(state: State<AppState>, id: i64, start: u32, end: u32) -> CmdResult<i64> {
-    edit::extract(&mut state.db.lock().unwrap(), id, start, end).map_err(err)
+async fn extract_track_range(app: AppHandle, id: i64, start: u32, end: u32) -> CmdResult<i64> {
+    blocking(app, move |s| s.write(|c| edit::extract(c, id, start, end))).await
 }
 
 #[tauri::command]
-fn join_track_segment(state: State<AppState>, id: i64, at: u32) -> CmdResult<()> {
-    edit::join_segment(&mut state.db.lock().unwrap(), id, at).map_err(err)
+async fn join_track_segment(app: AppHandle, id: i64, at: u32) -> CmdResult<()> {
+    blocking(app, move |s| s.write(|c| edit::join_segment(c, id, at))).await
 }
 
 #[tauri::command]
-fn list_file_waypoints(state: State<AppState>, file_id: i64) -> CmdResult<Vec<catalog::WaypointRow>> {
-    catalog::list_file_waypoints(&state.db.lock().unwrap(), file_id).map_err(err)
+async fn list_file_waypoints(app: AppHandle, file_id: i64) -> CmdResult<Vec<catalog::WaypointRow>> {
+    blocking(app, move |s| catalog::list_file_waypoints(&s.conn(), file_id)).await
 }
 
 #[tauri::command]
-fn revert_file(state: State<AppState>, file_id: i64) -> CmdResult<()> {
-    edit::revert_file(&mut state.db.lock().unwrap(), file_id).map_err(err)
+async fn revert_file(app: AppHandle, file_id: i64) -> CmdResult<()> {
+    blocking(app, move |s| s.write(|c| edit::revert_file(c, file_id))).await
 }
 
 struct TrackRef {
@@ -136,8 +195,8 @@ struct TrackRef {
     bbox: Option<[f64; 4]>,
 }
 
-fn track_ref(conn: &Connection, id: i64) -> Result<TrackRef, String> {
-    conn.query_row(
+fn track_ref(conn: &Connection, id: i64) -> Result<TrackRef> {
+    Ok(conn.query_row(
         "SELECT f.path, COALESCE(t.title, t.name), t.min_lat, t.min_lon, t.max_lat, t.max_lon
          FROM tracks t JOIN files f ON f.id = t.file_id WHERE t.id = ?1",
         [id],
@@ -152,81 +211,108 @@ fn track_ref(conn: &Connection, id: i64) -> Result<TrackRef, String> {
             };
             Ok(TrackRef { path, name, bbox })
         },
-    )
-    .map_err(err)
+    )?)
 }
 
 /// Exports the catalog copy (including edits) as KML and opens it in Google Earth,
 /// or in whatever app handles KML when Google Earth Pro is not installed.
 #[tauri::command]
-fn open_in_google_earth(app: tauri::AppHandle, state: State<AppState>, id: i64) -> CmdResult<()> {
-    let (data, track) = {
-        let conn = state.db.lock().unwrap();
-        (catalog::load_track_data(&conn, id).map_err(err)?, track_ref(&conn, id)?)
-    };
-    let dir = app.path().app_cache_dir().map_err(err)?.join("export");
-    std::fs::create_dir_all(&dir).map_err(err)?;
-    let file = dir.join(format!("track-{id}.kml"));
-    std::fs::write(&file, export::kml(&data, &track.name)).map_err(err)?;
-    let file = file.to_string_lossy().into_owned();
-    let opener = app.opener();
-    opener
-        .open_path(file.clone(), Some("Google Earth Pro"))
-        .or_else(|_| opener.open_path(file, None::<&str>))
-        .map_err(err)
+async fn open_in_google_earth(app: AppHandle, id: i64) -> CmdResult<()> {
+    let handle = app.clone();
+    blocking(app, move |s| {
+        let data = s.track(id)?;
+        let track = track_ref(&s.conn(), id)?;
+        let dir = handle.path().app_cache_dir()?.join("export");
+        std::fs::create_dir_all(&dir)?;
+        let file = dir.join(format!("track-{id}.kml"));
+        std::fs::write(&file, export::kml(&data, &track.name))?;
+        let file = file.to_string_lossy().into_owned();
+        let opener = handle.opener();
+        opener.open_path(file.clone(), Some("Google Earth Pro")).or_else(|_| opener.open_path(file, None::<&str>))?;
+        Ok(())
+    })
+    .await
 }
 
 /// Apple Maps cannot show a track line; it opens on the track's area.
 #[tauri::command]
-fn open_in_maps(app: tauri::AppHandle, state: State<AppState>, id: i64) -> CmdResult<()> {
-    let track = track_ref(&state.db.lock().unwrap(), id)?;
-    let [min_lat, min_lon, max_lat, max_lon] = track.bbox.ok_or("track has no position")?;
-    let url = format!(
-        "https://maps.apple.com/?ll={:.6},{:.6}&spn={:.6},{:.6}",
-        (min_lat + max_lat) / 2.0,
-        (min_lon + max_lon) / 2.0,
-        (max_lat - min_lat).max(0.005) * 1.2,
-        (max_lon - min_lon).max(0.005) * 1.2
-    );
-    app.opener().open_url(url, None::<&str>).map_err(err)
+async fn open_in_maps(app: AppHandle, id: i64) -> CmdResult<()> {
+    let handle = app.clone();
+    blocking(app, move |s| {
+        let track = track_ref(&s.conn(), id)?;
+        let [min_lat, min_lon, max_lat, max_lon] = track.bbox.ok_or_else(|| anyhow!("track has no position"))?;
+        let url = format!(
+            "https://maps.apple.com/?ll={:.6},{:.6}&spn={:.6},{:.6}",
+            (min_lat + max_lat) / 2.0,
+            (min_lon + max_lon) / 2.0,
+            (max_lat - min_lat).max(0.005) * 1.2,
+            (max_lon - min_lon).max(0.005) * 1.2
+        );
+        Ok(handle.opener().open_url(url, None::<&str>)?)
+    })
+    .await
 }
 
 #[tauri::command]
-fn reveal_track_file(app: tauri::AppHandle, state: State<AppState>, id: i64) -> CmdResult<()> {
-    let track = track_ref(&state.db.lock().unwrap(), id)?;
-    app.opener().reveal_item_in_dir(track.path).map_err(err)
+async fn reveal_track_file(app: AppHandle, id: i64) -> CmdResult<()> {
+    let handle = app.clone();
+    blocking(app, move |s| {
+        let track = track_ref(&s.conn(), id)?;
+        Ok(handle.opener().reveal_item_in_dir(track.path)?)
+    })
+    .await
 }
 
 #[tauri::command]
-fn update_track_meta(state: State<AppState>, id: i64, title: Option<String>, description: Option<String>) -> CmdResult<()> {
-    catalog::update_track_meta(&state.db.lock().unwrap(), id, title.as_deref(), description.as_deref()).map_err(err)
+async fn update_track_meta(app: AppHandle, id: i64, title: Option<String>, description: Option<String>) -> CmdResult<()> {
+    blocking(app, move |s| s.write(|c| catalog::update_track_meta(c, id, title.as_deref(), description.as_deref()))).await
 }
 
 #[tauri::command]
-fn set_track_activity(state: State<AppState>, id: i64, activity: Option<String>) -> CmdResult<()> {
-    catalog::set_track_activity(&state.db.lock().unwrap(), id, activity.as_deref()).map_err(err)
+async fn set_track_activity(app: AppHandle, id: i64, activity: Option<String>) -> CmdResult<()> {
+    blocking(app, move |s| s.write(|c| catalog::set_track_activity(c, id, activity.as_deref()))).await
 }
 
 #[tauri::command]
-fn set_track_tags(state: State<AppState>, id: i64, tags: Vec<String>) -> CmdResult<()> {
-    catalog::set_track_tags(&mut state.db.lock().unwrap(), id, &tags).map_err(err)
+async fn set_track_tags(app: AppHandle, id: i64, tags: Vec<String>) -> CmdResult<()> {
+    blocking(app, move |s| s.write(|c| catalog::set_track_tags(c, id, &tags))).await
 }
 
 #[tauri::command]
-fn list_tags(state: State<AppState>) -> CmdResult<Vec<String>> {
-    catalog::list_tags(&state.db.lock().unwrap()).map_err(err)
+async fn list_tags(app: AppHandle) -> CmdResult<Vec<String>> {
+    blocking(app, |s| catalog::list_tags(&s.conn())).await
 }
 
 #[tauri::command]
-fn list_gps_devices(state: State<AppState>) -> CmdResult<Vec<device::GpsDevice>> {
-    device::find_devices(Path::new("/Volumes"), &state.db.lock().unwrap()).map_err(err)
+async fn list_gps_devices(app: AppHandle) -> CmdResult<Vec<device::GpsDevice>> {
+    blocking(app, |s| {
+        let (roots, known) = {
+            let conn = s.conn();
+            (catalog::list_roots(&conn)?, catalog::all_hashes(&conn)?)
+        };
+        let devices = device::find_devices(Path::new("/Volumes"), &roots, &known, &mut s.device_hashes.lock().unwrap())?;
+        *s.device_files.lock().unwrap() = devices.iter().flat_map(|d| d.files.iter().map(|f| f.path.clone())).collect();
+        Ok(devices)
+    })
+    .await
 }
 
 #[tauri::command]
-fn import_device_files(state: State<AppState>, root_id: i64, files: Vec<String>) -> CmdResult<device::DeviceImportResult> {
-    let mut conn = state.db.lock().unwrap();
-    let root = catalog::get_root(&conn, root_id).map_err(err)?;
-    device::import_files(&mut conn, &root, &files).map_err(err)
+async fn import_device_files(app: AppHandle, root_id: i64, files: Vec<String>) -> CmdResult<device::DeviceImportResult> {
+    blocking(app, move |s| {
+        {
+            let allowed = s.device_files.lock().unwrap();
+            if let Some(f) = files.iter().find(|f| !allowed.contains(*f)) {
+                bail!("{f} is not a file on a detected GPS device");
+            }
+        }
+        let _importing = s.importing.lock().unwrap();
+        let root = catalog::get_root(&s.conn(), root_id)?;
+        device::import_files(&s.db, &root, &files, || {
+            s.writes.fetch_add(1, Ordering::SeqCst);
+        })
+    })
+    .await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -237,7 +323,16 @@ pub fn run() {
         .setup(|app| {
             let db_path = app.path().app_data_dir()?.join("catalog.sqlite");
             let db = catalog::open(&db_path)?;
-            app.manage(AppState { db_path, db: Mutex::new(db) });
+            app.manage(AppState {
+                db_path,
+                db: Mutex::new(db),
+                writes: AtomicU64::new(0),
+                track_cache: Mutex::new(None),
+                scanning: Arc::new(AtomicBool::new(false)),
+                device_hashes: Default::default(),
+                device_files: Default::default(),
+                importing: Mutex::new(()),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

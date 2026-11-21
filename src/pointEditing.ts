@@ -33,6 +33,18 @@ export function clickSelection(cur: PointSelection, i: number, m: Modifiers): Po
   return { set: new Set([i]), anchor: i };
 }
 
+const sortedCache = new WeakMap<Set<number>, number[]>();
+
+/** Ascending indices of a selection, computed once per selection (it can hold millions). */
+export function sortedIndices(set: Set<number>): number[] {
+  let sorted = sortedCache.get(set);
+  if (!sorted) {
+    sorted = Array.from(Uint32Array.from(set).sort());
+    sortedCache.set(set, sorted);
+  }
+  return sorted;
+}
+
 export function rangeSelection(start: number, end: number): PointSelection {
   const set = new Set<number>();
   for (let k = start; k < end; k++) set.add(k);

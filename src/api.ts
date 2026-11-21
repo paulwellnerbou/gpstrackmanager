@@ -130,6 +130,15 @@ export function toLines(v: Float64Array, start = 0, end = v.length): Line[] {
   return lines;
 }
 
+// Commands run in parallel in the backend; metadata saves must still land in the order
+// they were made, or an older save could overwrite a newer one.
+let metaQueue: Promise<unknown> = Promise.resolve();
+function inOrder<T>(f: () => Promise<T>): Promise<T> {
+  const p = metaQueue.then(f, f);
+  metaQueue = p.catch(() => undefined);
+  return p;
+}
+
 export const api = {
   listRoots: () => invoke<Root[]>("list_roots"),
   addRoot: (path: string) => invoke<Root>("add_root", { path }),
@@ -139,9 +148,10 @@ export const api = {
   listProblemFiles: () => invoke<FileProblem[]>("list_problem_files"),
   listTags: () => invoke<string[]>("list_tags"),
   updateTrackMeta: (id: number, title: string | null, description: string | null) =>
-    invoke<void>("update_track_meta", { id, title, description }),
-  setTrackTags: (id: number, tags: string[]) => invoke<void>("set_track_tags", { id, tags }),
-  setTrackActivity: (id: number, activity: string | null) => invoke<void>("set_track_activity", { id, activity }),
+    inOrder(() => invoke<void>("update_track_meta", { id, title, description })),
+  setTrackTags: (id: number, tags: string[]) => inOrder(() => invoke<void>("set_track_tags", { id, tags })),
+  setTrackActivity: (id: number, activity: string | null) =>
+    inOrder(() => invoke<void>("set_track_activity", { id, activity })),
   listGpsDevices: () => invoke<GpsDevice[]>("list_gps_devices"),
   importDeviceFiles: (rootId: number, files: string[]) =>
     invoke<{ copied: string[]; skipped: number; failed: string[] }>("import_device_files", { rootId, files }),
