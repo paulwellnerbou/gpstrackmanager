@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { Collapse } from "../presence";
 import {
   activityOf,
   api,
@@ -199,18 +200,22 @@ export function Sidebar(p: Props) {
             </button>
           </div>
         ))}
-        {busy && (
-          <div className="progress">
-            {p.scan!.phase === "listing" ? "Looking for files…" : `Importing ${p.scan!.done} / ${p.scan!.total}`}
-            <progress max={p.scan!.total || 1} value={p.scan!.done} />
-          </div>
-        )}
-        {p.scan?.phase === "done" && (
-          <div className="muted">
-            Last sync: {p.scan.done} file(s) imported in {(p.scan.elapsedMs / 1000).toFixed(1)} s
-          </div>
-        )}
-        {(unsupported > 0 || errors > 0 || missing > 0) && (
+        <Collapse show={!!busy}>
+          {busy && (
+            <div className="progress">
+              {p.scan!.phase === "listing" ? "Looking for files…" : `Importing ${p.scan!.done} / ${p.scan!.total}`}
+              <progress max={p.scan!.total || 1} value={p.scan!.done} />
+            </div>
+          )}
+        </Collapse>
+        <Collapse show={p.scan?.phase === "done"}>
+          {p.scan?.phase === "done" && (
+            <div className="muted">
+              Last sync: {p.scan.done} file(s) imported in {(p.scan.elapsedMs / 1000).toFixed(1)} s
+            </div>
+          )}
+        </Collapse>
+        <Collapse show={unsupported > 0 || errors > 0 || missing > 0}>
           <button className="link" onClick={() => setShowProblems(!showProblems)}>
             {[
               errors && `${errors} errors`,
@@ -220,8 +225,8 @@ export function Sidebar(p: Props) {
               .filter(Boolean)
               .join(" · ")}
           </button>
-        )}
-        {showProblems && (
+        </Collapse>
+        <Collapse show={showProblems}>
           <ul className="problems">
             {p.problems.map((f) => (
               <li key={f.path} title={f.error ?? undefined}>
@@ -230,7 +235,7 @@ export function Sidebar(p: Props) {
               </li>
             ))}
           </ul>
-        )}
+        </Collapse>
       </section>
 
       <section>
@@ -238,40 +243,44 @@ export function Sidebar(p: Props) {
           <h2>Device</h2>
           <button onClick={checkDevices}>Check for GPS device</button>
         </header>
-        {devices?.map((d) => (
-          <div key={d.volume} className="device">
-            <div>
-              <b>{d.model ?? d.volume.split("/").pop()}</b> <span className="muted">{d.volume}</span>
+        <Collapse show={!!devices?.length}>
+          {devices?.map((d) => (
+            <div key={d.volume} className="device">
+              <div>
+                <b>{d.model ?? d.volume.split("/").pop()}</b> <span className="muted">{d.volume}</span>
+              </div>
+              {d.files.length === 0 && <div className="muted">No track files on the device.</div>}
+              <ul>
+                {d.files.map((f) => (
+                  <li key={f.path}>
+                    <label className={f.imported ? "muted" : undefined}>
+                      <input
+                        type="checkbox"
+                        disabled={f.imported}
+                        checked={picked.has(f.path)}
+                        onChange={(e) => {
+                          const next = new Set(picked);
+                          if (e.target.checked) next.add(f.path);
+                          else next.delete(f.path);
+                          setPicked(next);
+                        }}
+                      />
+                      {f.name} {f.imported && "(imported)"}
+                    </label>
+                  </li>
+                ))}
+              </ul>
             </div>
-            {d.files.length === 0 && <div className="muted">No track files on the device.</div>}
-            <ul>
-              {d.files.map((f) => (
-                <li key={f.path}>
-                  <label className={f.imported ? "muted" : undefined}>
-                    <input
-                      type="checkbox"
-                      disabled={f.imported}
-                      checked={picked.has(f.path)}
-                      onChange={(e) => {
-                        const next = new Set(picked);
-                        if (e.target.checked) next.add(f.path);
-                        else next.delete(f.path);
-                        setPicked(next);
-                      }}
-                    />
-                    {f.name} {f.imported && "(imported)"}
-                  </label>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
-        {devices && picked.size > 0 && (
+          ))}
+        </Collapse>
+        <Collapse show={!!devices && picked.size > 0}>
           <button disabled={importing} onClick={importPicked}>
             {importing ? "Importing…" : `Import ${picked.size} file(s)`}
           </button>
-        )}
-        {deviceMsg && <div className="muted">{deviceMsg}</div>}
+        </Collapse>
+        <Collapse show={!!deviceMsg}>
+          <div className="muted">{deviceMsg}</div>
+        </Collapse>
       </section>
 
       <section className="list-section">

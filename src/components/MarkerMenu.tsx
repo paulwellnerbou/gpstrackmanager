@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { usePresence } from "../presence";
 import type { MarkerOptions } from "./trackMarkers";
 
 interface Props {
@@ -28,6 +29,7 @@ const ITEMS: { key: Toggle; label: string; group: "show" | "label" }[] = [
 export function MarkerMenu({ options, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const { shown, closing } = usePresence(open);
 
   useEffect(() => {
     if (!open) return;
@@ -49,9 +51,11 @@ export function MarkerMenu({ options, onChange }: Props) {
 
   return (
     <div className="marker-menu" ref={root}>
-      <button onClick={() => setOpen(!open)}>Markers ▾</button>
-      {open && (
-        <div className="marker-panel">
+      <button className={open ? "open" : undefined} aria-expanded={open} onClick={() => setOpen(!open)}>
+        Markers <span className="caret">▾</span>
+      </button>
+      {shown && (
+        <div className={closing ? "marker-panel closing" : "marker-panel"}>
           <div className="marker-group">Draw selected track as</div>
           <div className="segmented">
             {VIEWS.map((v) => (

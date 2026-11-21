@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { usePresence } from "../presence";
 import { Map as MapLibreMap, setWorkerUrl, type StyleSpecification, type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
@@ -204,6 +205,8 @@ export function MapView({
   const [baseMapFailed, setBaseMapFailed] = useState(false);
   const markers = useRef<TrackMarkers | null>(null);
   const [tooManyDots, setTooManyDots] = useState<number | null>(null);
+  const dotsHint = usePresence(tooManyDots);
+  const baseMapHint = usePresence(baseMapFailed);
   // Map event handlers are registered once; they read the current props through these.
   const live = useRef({ table, selection, pointView, onPointSelection, onPointMenu, locked });
   live.current = { table, selection, pointView, onPointSelection, onPointMenu, locked };
@@ -389,9 +392,11 @@ export function MapView({
     if (coarse && map.getSource("detail")) setData(map, "detail", multiLine(coarse));
     refreshDetail.current();
     if (!b) return;
-    // Selecting can open the details panel and shrink the map; a resize mid-animation
-    // cancels fitBounds, so fit once the new layout is in place.
-    const frame = requestAnimationFrame(() => {
+    // Selecting can slide the details pane open and shrink the map; a resize mid-animation
+    // cancels fitBounds, so fit once the pane has settled.
+    let cancelled = false;
+    const fit = () => {
+      if (cancelled) return;
       map.resize();
       map.fitBounds(
         [
@@ -400,8 +405,19 @@ export function MapView({
         ],
         { padding: 60, maxZoom: 16, duration: 400 },
       );
+    };
+    const frame = requestAnimationFrame(() => {
+      const slide = container.current
+        ?.closest(".app")
+        ?.getAnimations()
+        .find((a) => a instanceof CSSTransition && a.transitionProperty === "grid-template-columns");
+      if (slide) slide.finished.then(fit, fit);
+      else fit();
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
     // Only re-run when a different track is selected, not when its metadata is edited.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id]);
@@ -486,9 +502,15 @@ export function MapView({
     >
       <div ref={container} className="map" />
       <GeoSearch map={ready ? mapRef.current : null} />
-      {baseMapFailed && <div className="map-hint map-hint-bottom">Base map unavailable (offline?)</div>}
-      {tooManyDots != null && (
-        <div className="map-hint">Zoom in to see points ({tooManyDots.toLocaleString()} in view)</div>
+      {baseMapHint.shown && (
+        <div className={`map-hint map-hint-bottom${baseMapHint.closing ? " closing" : ""}`}>
+          Base map unavailable (offline?)
+        </div>
+      )}
+      {dotsHint.shown != null && (
+        <div className={`map-hint${dotsHint.closing ? " closing" : ""}`}>
+          Zoom in to see points ({dotsHint.shown.toLocaleString()} in view)
+        </div>
       )}
     </div>
   );
