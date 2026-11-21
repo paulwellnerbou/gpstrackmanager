@@ -297,7 +297,10 @@ export default function App() {
   // The details pane stays for its slide-out after the selection is cleared.
   const detailsPane = usePresence(selected, PANE_MS);
   const detailsClosing = detailsPane.closing;
-  const mapMenuShown = usePresence(mapMenu);
+  // A fading menu keeps the selection it was opened for; an edit clears it right away.
+  const mapMenuShown = usePresence(
+    mapMenu && selected && table && { ...mapMenu, trackId: selected.id, table, selection: pointSelection },
+  );
   const errorShown = usePresence(error);
 
   // Stored widths are preferences; what is shown is limited so the map keeps MAP_MIN when
@@ -443,15 +446,15 @@ export default function App() {
           onPointMenu={(x, y) => !editPending && setMapMenu({ x, y })}
           locked={editPending}
         />
-        {mapMenuShown.shown && selected && table && (
+        {mapMenuShown.shown && (
           <PointMenu
             key={`${mapMenuShown.shown.x},${mapMenuShown.shown.y}`}
             x={mapMenuShown.shown.x}
             y={mapMenuShown.shown.y}
             closing={mapMenuShown.closing}
-            trackId={selected.id}
-            table={table}
-            selection={pointSelection}
+            trackId={mapMenuShown.shown.trackId}
+            table={mapMenuShown.shown.table}
+            selection={mapMenuShown.shown.selection}
             onClose={closeMapMenu}
             onZoomTo={(bbox) => setFocus((f) => ({ bbox, seq: (f?.seq ?? 0) + 1 }))}
             onBeginEdit={beginEdit}
@@ -473,7 +476,13 @@ export default function App() {
           onChange={resizeDetails}
         />
       )}
-      {hasDetails && detailsElement.current}
+      {hasDetails && (
+        // `display: contents`, so the pane stays a grid item; inert keeps focus and keys out
+        // of a pane that is sliding away with a track that no longer exists.
+        <div className="details-slot" inert={detailsClosing}>
+          {detailsElement.current}
+        </div>
+      )}
     </div>
   );
 }
@@ -538,8 +547,11 @@ const SIDEBAR_MIN = 200;
 // The point table's fixed columns plus a full "lat, lon" pair need about this much.
 const DETAILS_MIN = 310;
 const MAP_MIN = 320;
-/** Matches `--pane` in App.css: how long the details pane takes to slide in or out. */
-const PANE_MS = 200;
+/**
+ * How long the closing details pane stays mounted: a little longer than `--pane` in
+ * App.css, since the transition starts at the next style update, after this timer.
+ */
+const PANE_MS = 240;
 
 const clampWidth = (w: number, min: number, max: number) => Math.max(min, Math.min(max, w));
 

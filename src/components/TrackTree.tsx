@@ -97,10 +97,20 @@ export function TrackTree(p: Props) {
   const [height, setHeight] = useState(300);
   const [menu, setMenu] = useState<Menu | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
-  const { shown: shownMenu, closing: menuClosing } = usePresence(menu);
   const loadingHint = usePresence(!table);
-  const [cleaningUp, setCleaningUp] = useState(false);
-  useEffect(() => setCleaningUp(false), [track.id]);
+  // Open for one track; `run` counts openings, so reopening during the exit animation
+  // starts a fresh panel instead of reviving the closing one with its old preview.
+  const [cleanup, setCleanup] = useState<{ trackId: number | null; run: number }>({ trackId: null, run: 0 });
+  const cleaningUp = cleanup.trackId === track.id;
+  const cleanupOpen = useRef(cleaningUp);
+  cleanupOpen.current = cleaningUp;
+  const { onSelectionChange } = p;
+  // The closing panel stays mounted for its exit; a preview it finds then must not
+  // reselect points after Cancel cleared them.
+  const cleanupSelect = useCallback(
+    (s: PointSelection) => cleanupOpen.current && onSelectionChange(s),
+    [onSelectionChange],
+  );
   const box = useRef<HTMLDivElement>(null);
   const n = table?.length ?? 0;
 
@@ -481,7 +491,12 @@ export function TrackTree(p: Props) {
     for (let row = from; row < to; row++) rows.push(renderBlockRow(b, row - offsets[bi], row * ROW));
   }
 
-  const menuSeg = shownMenu?.target === "seg" ? segments[shownMenu.seg] : null;
+  // A fading menu shows what it showed when it closed, not the selection or segments an
+  // action changed since.
+  const menuView = usePresence(menu && table && { menu, table, sorted, segments, n });
+  const shownMenu = menuView.shown?.menu;
+  const menuClosing = menuView.closing;
+  const menuSeg = shownMenu?.target === "seg" ? menuView.shown!.segments[shownMenu.seg] : null;
 
   return (
     <div className="points">
@@ -495,7 +510,7 @@ export function TrackTree(p: Props) {
         <button
           disabled={cleaningUp}
           aria-expanded={cleaningUp}
-          onClick={() => setCleaningUp(true)}
+          onClick={() => setCleanup((c) => ({ trackId: track.id, run: c.run + 1 }))}
           title="Remove the scatter where the logger lay still, e.g. left on indoors"
         >
           Clean up…
@@ -504,16 +519,17 @@ export function TrackTree(p: Props) {
       <Collapse show={cleaningUp}>
         <div className="cleanup-slot">
           <CleanupPanel
+            key={cleanup.run}
             trackId={track.id}
             table={table}
             locked={p.locked}
-            onSelectionChange={p.onSelectionChange}
+            onSelectionChange={cleanupSelect}
             onZoomTo={p.onZoomTo}
             onBeginEdit={p.onBeginEdit}
             onEdited={p.onEdited}
             onError={p.onError}
             onClose={() => {
-              setCleaningUp(false);
+              setCleanup((c) => ({ ...c, trackId: null }));
               p.onSelectionChange(EMPTY_SELECTION);
             }}
           />
@@ -548,15 +564,15 @@ export function TrackTree(p: Props) {
         {loadingHint.shown && <div className={loadingHint.closing ? "hint closing" : "hint"}>Loading points…</div>}
         <div style={{ height: totalRows * ROW, position: "relative" }}>{rows}</div>
       </div>
-      {shownMenu?.target === "points" && table && (
+      {shownMenu?.target === "points" && (
         <PointMenu
           key={`${shownMenu.x},${shownMenu.y}`}
           x={shownMenu.x}
           y={shownMenu.y}
           closing={menuClosing}
           trackId={track.id}
-          table={table}
-          selection={sorted}
+          table={menuView.shown!.table}
+          selection={menuView.shown!.sorted}
           onClose={closeMenu}
           onZoomTo={p.onZoomTo}
           onBeginEdit={p.onBeginEdit}
@@ -569,14 +585,14 @@ export function TrackTree(p: Props) {
           {menuSeg && (
             <>
               <button
-                disabled={menuSeg[1] - menuSeg[0] < 2 || n - (menuSeg[1] - menuSeg[0]) < 2}
+                disabled={menuSeg[1] - menuSeg[0] < 2 || menuView.shown!.n - (menuSeg[1] - menuSeg[0]) < 2}
                 onClick={() => run(() => api.extractTrackRange(track.id, menuSeg[0], menuSeg[1]))}
                 title="The segment becomes a track of its own; this track keeps the other segments"
               >
                 Make separate track
               </button>
               <button
-                disabled={shownMenu.seg + 1 >= segments.length}
+                disabled={shownMenu.seg + 1 >= menuView.shown!.segments.length}
                 onClick={() => run(() => api.joinTrackSegment(track.id, segments[shownMenu.seg + 1][0]))}
               >
                 Join with next segment
