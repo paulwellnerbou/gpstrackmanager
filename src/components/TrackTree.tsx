@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   activityOf,
   api,
@@ -9,6 +8,15 @@ import {
   type TrackSummary,
   type WaypointRow,
 } from "../api";
+import {
+  EMPTY_SELECTION,
+  bboxOf,
+  clickSelection,
+  deletePoints as confirmAndDelete,
+  rangeSelection,
+  type PointSelection,
+} from "../pointEditing";
+import { PointMenu } from "./PointMenu";
 
 const ROW = 20;
 const OVERSCAN = 10;
@@ -25,7 +33,10 @@ interface Props {
   onSelectTrack: (id: number) => void;
   onFocusWaypoint: (id: number | null) => void;
   onHover: (lonLat: [number, number] | null) => void;
-  onSelectionChange: (sortedIndices: number[]) => void;
+  selection: PointSelection;
+  onSelectionChange: (s: PointSelection) => void;
+  /** Scrolls the tree to a point selected elsewhere (on the map). */
+  reveal: { index: number; seq: number } | null;
   onZoomTo: (bbox: [number, number, number, number]) => void;
   onPanTo: (lonLat: [number, number]) => void;
   onEdited: () => void;
@@ -66,20 +77,13 @@ function fileName(path: string) {
  */
 export function TrackTree(p: Props) {
   const { track, table, waypoints } = p;
-  const [selection, setSelection] = useState<Set<number>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(300);
   const [menu, setMenu] = useState<Menu | null>(null);
-  const anchor = useRef<number | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
   const box = useRef<HTMLDivElement>(null);
   const n = table?.length ?? 0;
-
-  // Indices refer to one version of the track; a new table invalidates them.
-  useEffect(() => {
-    setSelection(new Set());
-    anchor.current = null;
-  }, [table]);
 
   useEffect(() => {
     setCollapsed(waypoints.length > WAYPOINTS_OPEN_MAX ? new Set(["wp"]) : new Set());
@@ -93,9 +97,8 @@ export function TrackTree(p: Props) {
     return () => ro.disconnect();
   }, []);
 
+  const selection = p.selection.set;
   const sorted = useMemo(() => [...selection].sort((a, b) => a - b), [selection]);
-  useEffect(() => p.onSelectionChange(sorted), [sorted, p.onSelectionChange]);
-  useEffect(() => () => p.onSelectionChange([]), [p.onSelectionChange]);
 
   useEffect(() => {
     if (!menu) return;
@@ -161,78 +164,49 @@ export function TrackTree(p: Props) {
     setCollapsed(next);
   };
 
-  const select = (i: number, e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
-    if (e.shiftKey && anchor.current != null) {
-      const [a, b] = [Math.min(anchor.current, i), Math.max(anchor.current, i)];
-      const next = e.metaKey ? new Set(selection) : new Set<number>();
-      for (let k = a; k <= b; k++) next.add(k);
-      setSelection(next);
-      return;
-    }
-    if (e.metaKey || e.ctrlKey) {
-      const next = new Set(selection);
-      if (next.has(i)) next.delete(i);
-      else next.add(i);
-      setSelection(next);
-    } else {
-      setSelection(new Set([i]));
-    }
-    anchor.current = i;
-  };
+  const select = (i: number, e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) =>
+    p.onSelectionChange(clickSelection(p.selection, i, { shift: e.shiftKey, toggle: e.metaKey || e.ctrlKey }));
 
-  const selectRange = (start: number, end: number) => {
-    const next = new Set<number>();
-    for (let k = start; k < end; k++) next.add(k);
-    setSelection(next);
-    anchor.current = start;
-  };
-
-  const bboxOf = (indices: Iterable<number>): [number, number, number, number] | null => {
-    if (!table) return null;
-    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
-    for (const i of indices) {
-      x0 = Math.min(x0, table.lon[i]);
-      x1 = Math.max(x1, table.lon[i]);
-      y0 = Math.min(y0, table.lat[i]);
-      y1 = Math.max(y1, table.lat[i]);
-    }
-    return Number.isFinite(x0) ? [x0, y0, x1, y1] : null;
-  };
+  const selectRange = (start: number, end: number) => p.onSelectionChange(rangeSelection(start, end));
 
   const zoomTo = (indices: Iterable<number>) => {
     setMenu(null);
-    const b = bboxOf(indices);
+    const b = table && bboxOf(table, indices);
     if (b) p.onZoomTo(b);
   };
 
   const run = async (action: () => Promise<unknown>) => {
     setMenu(null);
     try {
-      await action();
-      p.onEdited();
+      if ((await action()) !== false) p.onEdited();
     } catch (e) {
       p.onError(String(e));
     }
   };
 
-  const deletePoints = async (indices: number[], what: string) => {
-    setMenu(null);
-    if (!indices.length) return;
-    if (indices.length > 1) {
-      const ok = await ask(`Delete ${what} from this track?`, {
-        title: "Delete points",
-        kind: "warning",
-        okLabel: "Delete",
-      });
-      if (!ok) return;
-    }
-    await run(() => api.deleteTrackPoints(track.id, indices));
-  };
+  const deletePoints = (indices: number[], what: string) => run(() => confirmAndDelete(track.id, indices, what));
 
   const range = (s: number, e: number) => Array.from({ length: e - s }, (_, k) => s + k);
 
-  const splitAt = sorted[0];
-  const canSplit = sorted.length > 0 && splitAt > 0 && splitAt < n;
+  // Bring a point selected on the map into view, expanding its segment if needed.
+  const revealed = useRef(0);
+  useEffect(() => {
+    const r = p.reveal;
+    const el = box.current;
+    if (!r || r.seq === revealed.current || !el) return;
+    const seg = segments.find(([s, e]) => r.index >= s && r.index < e);
+    if (segments.length > 1 && seg && collapsed.has(`seg:${seg[0]}`)) {
+      toggle(`seg:${seg[0]}`);
+      return;
+    }
+    revealed.current = r.seq;
+    const bi = blocks.findIndex((b) => b.kind === "points" && r.index >= b.start && r.index < b.end);
+    if (bi < 0) return;
+    const b = blocks[bi] as { start: number };
+    const top = (offsets[bi] + r.index - b.start) * ROW;
+    if (top < el.scrollTop || top + ROW > el.scrollTop + el.clientHeight) el.scrollTop = top - el.clientHeight / 2;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.reveal, blocks]);
 
   const pointRow = (i: number, depth: number, top: number) => {
     const t = table!;
@@ -251,10 +225,7 @@ export function TrackTree(p: Props) {
         }}
         onContextMenu={(e) => {
           e.preventDefault();
-          if (!selection.has(i)) {
-            setSelection(new Set([i]));
-            anchor.current = i;
-          }
+          if (!selection.has(i)) p.onSelectionChange({ set: new Set([i]), anchor: i });
           setMenu({ x: e.clientX, y: e.clientY, target: "points" });
         }}
         onMouseEnter={() => p.onHover([t.lon[i], t.lat[i]])}
@@ -467,34 +438,28 @@ export function TrackTree(p: Props) {
             e.preventDefault();
             deletePoints(sorted, `${sorted.length.toLocaleString()} points`);
           } else if (e.key === "Escape") {
-            setSelection(new Set());
+            p.onSelectionChange(EMPTY_SELECTION);
           }
         }}
       >
         {!table && <div className="hint">Loading points…</div>}
         <div style={{ height: totalRows * ROW, position: "relative" }}>{rows}</div>
       </div>
-      {menu && (
+      {menu?.target === "points" && table && (
+        <PointMenu
+          x={menu.x}
+          y={menu.y}
+          trackId={track.id}
+          table={table}
+          selection={sorted}
+          onClose={closeMenu}
+          onZoomTo={p.onZoomTo}
+          onEdited={p.onEdited}
+          onError={p.onError}
+        />
+      )}
+      {menu?.target === "seg" && (
         <div className="context-menu" style={{ left: menu.x, top: menu.y }} onMouseDown={(e) => e.stopPropagation()}>
-          {menu.target === "points" && (
-            <>
-              <button disabled={!canSplit} onClick={() => run(() => api.splitTrack(track.id, splitAt))}>
-                Split track here (new track starts at #{(splitAt ?? 0) + 1})
-              </button>
-              <button
-                disabled={!sorted.length}
-                onClick={() =>
-                  deletePoints(sorted, sorted.length === 1 ? "1 point" : `${sorted.length.toLocaleString()} points`)
-                }
-              >
-                Delete {sorted.length === 1 ? "point" : `${sorted.length.toLocaleString()} points`}
-              </button>
-              <hr />
-              <button disabled={!sorted.length} onClick={() => zoomTo(sorted)}>
-                Zoom to selection
-              </button>
-            </>
-          )}
           {menuSeg && menu.target === "seg" && (
             <>
               <button

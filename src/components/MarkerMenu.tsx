@@ -6,7 +6,15 @@ interface Props {
   onChange: (o: MarkerOptions) => void;
 }
 
-const ITEMS: { key: keyof MarkerOptions; label: string; group: "show" | "label" }[] = [
+type Toggle = Exclude<keyof MarkerOptions, "pointView">;
+
+const VIEWS: { value: MarkerOptions["pointView"]; label: string }[] = [
+  { value: "line", label: "Line" },
+  { value: "points", label: "Points" },
+  { value: "both", label: "Both" },
+];
+
+const ITEMS: { key: Toggle; label: string; group: "show" | "label" }[] = [
   { key: "startEnd", label: "Start / End", group: "show" },
   { key: "distance", label: "Distance markers", group: "show" },
   { key: "waypoints", label: "Waypoints and laps", group: "show" },
@@ -44,6 +52,18 @@ export function MarkerMenu({ options, onChange }: Props) {
       <button onClick={() => setOpen(!open)}>Markers ▾</button>
       {open && (
         <div className="marker-panel">
+          <div className="marker-group">Draw selected track as</div>
+          <div className="segmented">
+            {VIEWS.map((v) => (
+              <button
+                key={v.value}
+                className={options.pointView === v.value ? "active" : undefined}
+                onClick={() => onChange({ ...options, pointView: v.value })}
+              >
+                {v.label}
+              </button>
+            ))}
+          </div>
           <div className="marker-group">Show for selected track</div>
           {ITEMS.filter((i) => i.group === "show").map(row)}
           <div className="marker-group">Labels (distance markers and selected points)</div>

@@ -15,6 +15,8 @@ import {
 } from "./api";
 import { DEFAULT_MARKER_OPTIONS, type MarkerOptions } from "./components/trackMarkers";
 import { MarkerMenu } from "./components/MarkerMenu";
+import { PointMenu } from "./components/PointMenu";
+import { EMPTY_SELECTION, type PointSelection } from "./pointEditing";
 import { Sidebar } from "./components/Sidebar";
 import { MapView } from "./components/MapView";
 import { Profile } from "./components/Profile";
@@ -36,7 +38,11 @@ export default function App() {
   const [table, setTable] = useState<PointTable | null>(null);
   const [waypoints, setWaypoints] = useState<WaypointRow[]>([]);
   const [focusedWaypoint, setFocusedWaypoint] = useState<number | null>(null);
-  const [pointSelection, setPointSelection] = useState<number[]>([]);
+  const [selection, setSelection] = useState<PointSelection>(EMPTY_SELECTION);
+  const [reveal, setReveal] = useState<{ index: number; seq: number } | null>(null);
+  const [mapMenu, setMapMenu] = useState<{ x: number; y: number } | null>(null);
+  const closeMapMenu = useCallback(() => setMapMenu(null), []);
+  const pointSelection = useMemo(() => [...selection.set].sort((a, b) => a - b), [selection]);
   const [markerOptions, setMarkerOptions] = useState<MarkerOptions>(loadMarkerOptions);
   const [focus, setFocus] = useState<MapFocus | null>(null);
   // Bumped after point edits so map, profile and point list reload the track's data.
@@ -92,6 +98,15 @@ export default function App() {
 
   const selected = tracks.find((t) => t.id === selectedId) ?? null;
 
+  // Indices refer to one version of one track; a new point table invalidates them.
+  useEffect(() => setSelection(EMPTY_SELECTION), [table]);
+
+  const selectOnMap = (s: PointSelection) => {
+    setSelection(s);
+    const index = s.anchor ?? [...s.set][0];
+    if (index != null) setReveal((r) => ({ index, seq: (r?.seq ?? 0) + 1 }));
+  };
+
   // One copy of the selected track's points, shared by the point list and the map markers.
   useEffect(() => {
     let cancelled = false;
@@ -129,6 +144,11 @@ export default function App() {
         .sort((a, b) => (a.idx < 0 ? 1e9 - a.idx : a.idx) - (b.idx < 0 ? 1e9 - b.idx : b.idx)),
     [tracks, fileId],
   );
+
+  const onEdited = async () => {
+    await reloadCatalog();
+    setVersion((v) => v + 1);
+  };
 
   const changeMarkerOptions = (o: MarkerOptions) => {
     setMarkerOptions(o);
@@ -191,7 +211,24 @@ export default function App() {
           focus={focus}
           version={version}
           onSelect={setSelectedId}
+          pointView={markerOptions.pointView}
+          selection={selection}
+          onPointSelection={selectOnMap}
+          onPointMenu={(x, y) => setMapMenu({ x, y })}
         />
+        {mapMenu && selected && table && (
+          <PointMenu
+            x={mapMenu.x}
+            y={mapMenu.y}
+            trackId={selected.id}
+            table={table}
+            selection={pointSelection}
+            onClose={closeMapMenu}
+            onZoomTo={(bbox) => setFocus((f) => ({ bbox, seq: (f?.seq ?? 0) + 1 }))}
+            onEdited={onEdited}
+            onError={setError}
+          />
+        )}
         <Profile track={selected} version={version} onCursor={setCursor} />
       </main>
       {selected && (
@@ -218,13 +255,12 @@ export default function App() {
           onSelectTrack={setSelectedId}
           onFocusWaypoint={setFocusedWaypoint}
           onHover={setCursor}
-          onSelectionChange={setPointSelection}
+          selection={selection}
+          onSelectionChange={setSelection}
+          reveal={reveal}
           onZoomTo={(bbox) => setFocus((f) => ({ bbox, seq: (f?.seq ?? 0) + 1 }))}
           onPanTo={(center) => setFocus((f) => ({ center, seq: (f?.seq ?? 0) + 1 }))}
-          onEdited={async () => {
-            await reloadCatalog();
-            setVersion((v) => v + 1);
-          }}
+          onEdited={onEdited}
           onError={setError}
         />
       )}

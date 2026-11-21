@@ -6,6 +6,8 @@ import type { Feature, GeoJSON as GeoJSONData } from "geojson";
 import { api, type Line, type MapFocus, type PointTable, type TrackSummary, type WaypointRow } from "../api";
 import { TrackMarkers, type MarkerOptions } from "./trackMarkers";
 import { useColorScheme } from "../useColorScheme";
+import { clickSelection, type PointSelection } from "../pointEditing";
+import { installBoxSelect, pointAt, pointsInRect, updateDots, type PointView } from "./mapPoints";
 
 // MapLibre locates its worker relative to its own module URL, which Vite's dependency
 // pre-bundling relocates; point it at the real file instead.
@@ -27,7 +29,7 @@ const blankStyle = (scheme: "light" | "dark"): StyleSpecification => ({
   ],
 });
 
-const OWN_SOURCES = ["overview", "detail", "highlight", "cursor"] as const;
+const OWN_SOURCES = ["overview", "detail", "dots", "highlight", "cursor"] as const;
 /** Drawing more highlighted points than this adds nothing but load. */
 const MAX_HIGHLIGHT = 5000;
 const OVERVIEW_COLOR = "#7a5cc4";
@@ -51,6 +53,12 @@ interface Props {
   focus: MapFocus | null;
   version: number;
   onSelect: (id: number) => void;
+  pointView: PointView;
+  selection: PointSelection;
+  /** Selection made on the map. */
+  onPointSelection: (s: PointSelection) => void;
+  /** Right-click on the map with points selected; client coordinates. */
+  onPointMenu: (x: number, y: number) => void;
 }
 
 function multiLine(lines: Line[], id?: number): Feature {
@@ -80,6 +88,17 @@ function addOwnLayers(map: MapLibreMap) {
     source: "detail",
     layout: { "line-join": "round", "line-cap": "round" },
     paint: { "line-color": "#d6336c", "line-width": 4 },
+  });
+  map.addLayer({
+    id: "dots",
+    type: "circle",
+    source: "dots",
+    paint: {
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 2.5, 18, 4.5],
+      "circle-color": "#d6336c",
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 1,
+    },
   });
   map.addLayer({
     id: "highlight",
@@ -114,6 +133,10 @@ export function MapView({
   focus,
   version,
   onSelect,
+  pointView,
+  selection,
+  onPointSelection,
+  onPointMenu,
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -125,6 +148,14 @@ export function MapView({
   const scheme = useColorScheme();
   const baseStyle = showBaseMap ? MAP_STYLES[scheme] : blankStyle(scheme);
   const markers = useRef<TrackMarkers | null>(null);
+  const [tooManyDots, setTooManyDots] = useState<number | null>(null);
+  // Map event handlers are registered once; they read the current props through these.
+  const live = useRef({ table, selection, pointView, onPointSelection, onPointMenu });
+  live.current = { table, selection, pointView, onPointSelection, onPointMenu };
+  const refreshDots = useRef(() => {
+    const map = mapRef.current;
+    if (map) setTooManyDots(updateDots(map, live.current.table, live.current.pointView));
+  });
 
   // Detail is re-fetched for every view change: the backend returns only what is
   // visible, thinned to the current zoom, so huge tracks never reach the renderer whole.
@@ -161,7 +192,23 @@ export function MapView({
       markers.current = new TrackMarkers(map);
       setReady(true);
     });
-    map.on("moveend", () => refreshDetail.current());
+    map.on("moveend", () => {
+      refreshDetail.current();
+      refreshDots.current();
+    });
+    installBoxSelect(
+      map,
+      () => live.current.table != null,
+      (a, b, additive) => {
+        const { table: t, selection: cur } = live.current;
+        if (!t) return;
+        const hits = pointsInRect(map, t, a, b);
+        const set = additive ? new Set(cur.set) : new Set<number>();
+        for (const i of hits) set.add(i);
+        live.current.onPointSelection({ set, anchor: hits[0] ?? cur.anchor });
+      },
+    );
+    const dotAt = (p: { x: number; y: number }) => (live.current.pointView === "line" ? null : pointAt(map, p));
     // Thin lines are hard to hit exactly, so pick within a few pixels of the pointer.
     const trackAt = (p: { x: number; y: number }) => {
       const r = 6;
@@ -178,11 +225,28 @@ export function MapView({
       return typeof id === "number" ? id : null;
     };
     map.on("click", (e) => {
+      const i = dotAt(e.point);
+      if (i != null) {
+        const ev = e.originalEvent;
+        const mods = { shift: ev.shiftKey, toggle: ev.metaKey || ev.ctrlKey };
+        live.current.onPointSelection(clickSelection(live.current.selection, i, mods));
+        return;
+      }
       const id = trackAt(e.point);
       if (id != null) onSelectRef.current(id);
     });
+    map.on("contextmenu", (e) => {
+      e.originalEvent.preventDefault();
+      const i = dotAt(e.point);
+      let sel = live.current.selection;
+      if (i != null && !sel.set.has(i)) {
+        sel = { set: new Set([i]), anchor: i };
+        live.current.onPointSelection(sel);
+      }
+      if (sel.set.size) live.current.onPointMenu(e.originalEvent.clientX, e.originalEvent.clientY);
+    });
     map.on("mousemove", (e) => {
-      map.getCanvas().style.cursor = trackAt(e.point) != null ? "pointer" : "";
+      map.getCanvas().style.cursor = dotAt(e.point) != null || trackAt(e.point) != null ? "pointer" : "";
     });
     return () => map.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -302,5 +366,21 @@ export function MapView({
     });
   }, [cursor]);
 
-  return <div ref={container} className="map" />;
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const line = pointView === "points" ? "none" : "visible";
+    map.setLayoutProperty("detail", "visibility", line);
+    map.setLayoutProperty("detail-casing", "visibility", line);
+    refreshDots.current();
+  }, [table, pointView, ready]);
+
+  return (
+    <div className="map-wrap">
+      <div ref={container} className="map" />
+      {tooManyDots != null && (
+        <div className="map-hint">Zoom in to see points ({tooManyDots.toLocaleString()} in view)</div>
+      )}
+    </div>
+  );
 }

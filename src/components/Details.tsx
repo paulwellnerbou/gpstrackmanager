@@ -11,6 +11,7 @@ import {
   type WaypointRow,
 } from "../api";
 import { TrackTree } from "./TrackTree";
+import type { PointSelection } from "../pointEditing";
 
 interface Props {
   track: TrackSummary;
@@ -25,7 +26,9 @@ interface Props {
   onSelectTrack: (id: number) => void;
   onFocusWaypoint: (id: number | null) => void;
   onHover: (lonLat: [number, number] | null) => void;
-  onSelectionChange: (sortedIndices: number[]) => void;
+  selection: PointSelection;
+  onSelectionChange: (s: PointSelection) => void;
+  reveal: { index: number; seq: number } | null;
   onZoomTo: (bbox: [number, number, number, number]) => void;
   onPanTo: (lonLat: [number, number]) => void;
   onEdited: () => void;

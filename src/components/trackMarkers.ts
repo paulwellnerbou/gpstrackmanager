@@ -2,6 +2,8 @@ import { Marker, type Map as MapLibreMap } from "maplibre-gl";
 import type { PointTable, WaypointRow } from "../api";
 
 export interface MarkerOptions {
+  /** How the selected track is drawn: as a line, as its points, or both. */
+  pointView: "line" | "points" | "both";
   startEnd: boolean;
   waypoints: boolean;
   distance: boolean;
@@ -13,6 +15,7 @@ export interface MarkerOptions {
 }
 
 export const DEFAULT_MARKER_OPTIONS: MarkerOptions = {
+  pointView: "line",
   startEnd: true,
   waypoints: true,
   distance: true,
