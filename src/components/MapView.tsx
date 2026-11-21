@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Map as MapLibreMap, setWorkerUrl, type StyleSpecification, type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
@@ -53,6 +53,9 @@ function trackPaint(brightness: Brightness, color: TrackColor, dimmed: boolean) 
     detail: dark ? "#ff6b9a" : "#d6336c",
     // A white halo glares on a dark map; a dark one separates the line just as well.
     casing: dark ? "#14131a" : "#ffffff",
+    /** DOM markers: their surface and text, following the map rather than the OS theme. */
+    markerSurface: dark ? "#26242c" : "#ffffff",
+    markerInk: dark ? "#ece9f1" : "#1f1d22",
   };
 }
 
@@ -471,7 +474,16 @@ export function MapView({
   }, [table, pointView, ready]);
 
   return (
-    <div className="map-wrap">
+    <div
+      className="map-wrap"
+      style={
+        {
+          "--trk-line": paint.detail,
+          "--trk-surface": paint.markerSurface,
+          "--trk-ink": paint.markerInk,
+        } as CSSProperties
+      }
+    >
       <div ref={container} className="map" />
       <GeoSearch map={ready ? mapRef.current : null} />
       {baseMapFailed && <div className="map-hint map-hint-bottom">Base map unavailable (offline?)</div>}

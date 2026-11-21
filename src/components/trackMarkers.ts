@@ -33,8 +33,20 @@ const MAX_DISTANCE_MARKERS = 200;
 const MAX_SELECTION_LABELS = 40;
 const MAX_WAYPOINTS = 300;
 
-const ARROW_SVG =
-  '<svg viewBox="0 0 16 16" width="16" height="16"><path d="M8 1 L14 14 L8 10.5 L2 14 Z" fill="#f08c00" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+/** Drawn twice, wide in the line colour and narrow on top, so it shows on the line and off it. */
+const CHEVRON_SVG =
+  '<svg viewBox="0 0 18 18" width="18" height="18"><path class="trk-chevron-edge" d="M5 11.5 9 7.5l4 4"/><path class="trk-chevron-face" d="M5 11.5 9 7.5l4 4"/></svg>';
+
+/** The tip, at the bottom centre, sits exactly on the waypoint. */
+const PIN_SVG =
+  '<svg viewBox="0 0 18 24" width="18" height="24"><path class="trk-wp-body" d="M9 24 3.2 13A7 7 0 1 1 14.8 13Z"/><circle class="trk-wp-eye" cx="9" cy="9" r="2.5"/></svg>';
+
+/** Flags stand on the point at the foot of their pole; the finish flag flies the other way,
+    so on a round trip both stay visible. */
+const START_FLAG_SVG =
+  '<svg viewBox="0 0 28 34" width="28" height="34"><path class="trk-pole" d="M5 30V3"/><path class="trk-flag-start" d="M6 3h17l-4 6 4 6H6z"/><circle class="trk-foot" cx="5" cy="30" r="3.5"/></svg>';
+const FINISH_FLAG_SVG =
+  '<svg viewBox="0 0 28 34" width="28" height="34"><path class="trk-pole" d="M23 30V3"/><rect class="trk-flag-finish" x="4" y="3" width="18" height="12"/><path class="trk-flag-check" d="M4 3h6v6H4zM16 3h6v6h-6zM10 9h6v6h-6z"/><circle class="trk-foot" cx="23" cy="30" r="3.5"/></svg>';
 
 function formatKm(m: number) {
   const km = m / 1000;
@@ -109,16 +121,25 @@ export class TrackMarkers {
     this.markers = [];
   }
 
-  private add(el: HTMLElement, lon: number, lat: number) {
-    this.markers.push(new Marker({ element: el, anchor: "center" }).setLngLat([lon, lat]).addTo(this.map));
+  private add(
+    el: HTMLElement,
+    lon: number,
+    lat: number,
+    anchor: "center" | "bottom-left" | "bottom-right" = "center",
+    offset: [number, number] = [0, 0],
+  ) {
+    this.markers.push(new Marker({ element: el, anchor, offset }).setLngLat([lon, lat]).addTo(this.map));
   }
 
-  private pin(kind: "start" | "end", text: string) {
+  private flag(kind: "start" | "end", text: string, lon: number, lat: number) {
     const el = document.createElement("div");
     el.className = `trk-pin trk-pin-${kind}`;
-    el.textContent = kind === "start" ? "S" : "E";
     el.title = text;
-    return el;
+    el.setAttribute("aria-label", text);
+    el.innerHTML = kind === "start" ? START_FLAG_SVG : FINISH_FLAG_SVG;
+    // Offsets put the pole's foot (5px in from the side, 4px up) on the point.
+    if (kind === "start") this.add(el, lon, lat, "bottom-left", [-5, 4]);
+    else this.add(el, lon, lat, "bottom-right", [5, 4]);
   }
 
   private arrow(bearing: number, text: string, kind: "distance" | "selection") {
@@ -126,9 +147,9 @@ export class TrackMarkers {
     el.className = `trk-mk trk-mk-${kind}`;
     if (!Number.isNaN(bearing)) {
       const a = document.createElement("div");
-      a.className = "trk-arrow";
+      a.className = "trk-chevron";
       a.style.transform = `rotate(${bearing - this.map.getBearing()}deg)`;
-      a.innerHTML = ARROW_SVG;
+      a.innerHTML = CHEVRON_SVG;
       el.appendChild(a);
     } else {
       el.classList.add("trk-mk-dot");
@@ -147,7 +168,9 @@ export class TrackMarkers {
     if (!m) {
       const div = document.createElement("div");
       div.className = `trk-wp trk-wp-${w.kind}`;
-      m = new Marker({ element: div, anchor: "center" }).setLngLat([w.lon, w.lat]).addTo(this.map);
+      if (w.kind === "waypoint") div.innerHTML = PIN_SVG;
+      const anchor = w.kind === "waypoint" ? "bottom" : "center";
+      m = new Marker({ element: div, anchor }).setLngLat([w.lon, w.lat]).addTo(this.map);
       this.waypointMarkers.set(w.id, m);
     } else {
       m.setLngLat([w.lon, w.lat]);
@@ -157,7 +180,8 @@ export class TrackMarkers {
     el.classList.toggle("focused", focused);
     const when = w.time != null ? ` · ${new Date(w.time).toLocaleString()}` : "";
     el.title = `${w.name ?? "Waypoint"}${when}${w.description ? `\n${w.description}` : ""}`;
-    el.replaceChildren();
+    // The pin stays, so its focus transition can run; only the label is rebuilt.
+    el.querySelector(".trk-label")?.remove();
     if (focused) {
       const l = document.createElement("div");
       l.className = "trk-label";
@@ -231,8 +255,8 @@ export class TrackMarkers {
 
     if (o.startEnd) {
       const time = (i: number) => (Number.isNaN(t.time[i]) ? "" : ` · ${new Date(t.time[i]).toLocaleString()}`);
-      this.add(this.pin("end", `End · ${formatKm(t.dist[n - 1])}${time(n - 1)}`), t.lon[n - 1], t.lat[n - 1]);
-      this.add(this.pin("start", `Start${time(0)}`), t.lon[0], t.lat[0]);
+      this.flag("end", `Finish · ${formatKm(t.dist[n - 1])}${time(n - 1)}`, t.lon[n - 1], t.lat[n - 1]);
+      this.flag("start", `Start${time(0)}`, t.lon[0], t.lat[0]);
     }
   }
 }
