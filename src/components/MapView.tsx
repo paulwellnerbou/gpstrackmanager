@@ -7,6 +7,7 @@ import { api, type Line, type MapFocus, type PointTable, type TrackSummary, type
 import { TrackMarkers, type MarkerOptions } from "./trackMarkers";
 import { useColorScheme } from "../useColorScheme";
 import { clickSelection, isToggleKey, type PointSelection } from "../pointEditing";
+import { hoverCursor } from "../hoverCursor";
 import { GeoSearch } from "./GeoSearch";
 import { installBoxSelect, pointAt, pointsInRect, updateDots, type PointView } from "./mapPoints";
 
@@ -42,7 +43,6 @@ interface Props {
   selected: TrackSummary | null;
   showBaseMap: boolean;
   showAll: boolean;
-  cursor: [number, number] | null;
   /** Point table of the selected track, for markers and highlighted points. */
   table: PointTable | null;
   /** Selected point indices, ascending. */
@@ -149,7 +149,6 @@ export function MapView({
   selected,
   showBaseMap,
   showAll,
-  cursor,
   table,
   pointSelection,
   markerOptions,
@@ -412,14 +411,20 @@ export function MapView({
     );
   }, [focus]);
 
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.getSource("cursor")) return;
-    setData(map, "cursor", {
-      type: "FeatureCollection",
-      features: cursor ? [{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: cursor } }] : [],
-    });
-  }, [cursor]);
+  useEffect(
+    () =>
+      hoverCursor.subscribe((cursor) => {
+        const map = mapRef.current;
+        if (!map || !map.getSource("cursor")) return;
+        setData(map, "cursor", {
+          type: "FeatureCollection",
+          features: cursor
+            ? [{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: cursor } }]
+            : [],
+        });
+      }),
+    [],
+  );
 
   useEffect(() => {
     const map = mapRef.current;

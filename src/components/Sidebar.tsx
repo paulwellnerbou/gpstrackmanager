@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   activityOf,
@@ -28,17 +28,106 @@ interface Props {
   onError: (message: string) => void;
 }
 
+/**
+ * Rows of one kind (with or without a route line and tags) share a height, so the list can
+ * render only what is visible. These are the starting values; a kind grows if its rows need
+ * more (larger text).
+ */
+const ROW_H = 50;
+const ROUTE_H = 17;
+const TAGS_H = 20;
+const OVERSCAN = 8;
+
+type RowKind = "" | "r" | "t" | "rt";
+
+/** The route line is shown only when it adds something to the name. */
+function routeLine(t: TrackSummary): string | null {
+  const route = routeName(t);
+  return route && route !== displayName(t) ? route : null;
+}
+
+function rowKind(t: TrackSummary): RowKind {
+  return `${routeLine(t) ? "r" : ""}${t.tags.length ? "t" : ""}` as RowKind;
+}
+
+const DEFAULT_ROW_HEIGHTS: Record<RowKind, number> = {
+  "": ROW_H,
+  r: ROW_H + ROUTE_H,
+  t: ROW_H + TAGS_H,
+  rt: ROW_H + ROUTE_H + TAGS_H,
+};
+
 export function Sidebar(p: Props) {
   const [devices, setDevices] = useState<GpsDevice[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [deviceMsg, setDeviceMsg] = useState<string | null>(null);
   const [showProblems, setShowProblems] = useState(false);
 
+  const list = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewHeight, setViewHeight] = useState(600);
+  useEffect(() => {
+    const el = list.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setViewHeight(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHTS);
+  useLayoutEffect(() => {
+    const next = { ...rowHeight };
+    list.current?.querySelectorAll<HTMLElement>(".list-row").forEach((row) => {
+      const kind = (row.dataset.kind ?? "") as RowKind;
+      // +1 for the bottom border, which scrollHeight leaves out.
+      next[kind] = Math.max(next[kind], row.scrollHeight + 1);
+    });
+    if ((Object.keys(next) as RowKind[]).some((k) => next[k] !== rowHeight[k])) setRowHeight(next);
+  });
+  const offsets = useMemo(() => {
+    const o = new Float64Array(p.tracks.length + 1);
+    p.tracks.forEach((t, i) => (o[i + 1] = o[i] + rowHeight[rowKind(t)]));
+    return o;
+  }, [p.tracks, rowHeight]);
+  const rowAt = (y: number) => {
+    let [lo, hi] = [0, p.tracks.length];
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (offsets[mid + 1] <= y) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  const first = Math.max(0, rowAt(scrollTop) - OVERSCAN);
+  const last = Math.min(p.tracks.length, rowAt(scrollTop + viewHeight) + 1 + OVERSCAN);
+  const selectedIndex = p.tracks.findIndex((t) => t.id === p.selectedId);
+
   // Selection can come from the map, so bring the list entry into view.
   useEffect(() => {
-    if (p.selectedId == null) return;
-    document.querySelector(`[data-track-id="${p.selectedId}"]`)?.scrollIntoView({ block: "nearest" });
+    const el = list.current;
+    if (!el || selectedIndex < 0) return;
+    const [top, bottom] = [offsets[selectedIndex], offsets[selectedIndex + 1]];
+    if (top < el.scrollTop) el.scrollTop = top;
+    else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight;
+    // Only when the selection changes, not on every list update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.selectedId]);
+
+  const onListKey = (e: KeyboardEvent) => {
+    const n = p.tracks.length;
+    if (!n) return;
+    const page = Math.max(1, Math.floor(viewHeight / rowHeight[""]) - 1);
+    const next = {
+      ArrowDown: selectedIndex < 0 ? 0 : selectedIndex + 1,
+      ArrowUp: selectedIndex < 0 ? 0 : selectedIndex - 1,
+      PageDown: selectedIndex + page,
+      PageUp: selectedIndex - page,
+      Home: 0,
+      End: n - 1,
+    }[e.key];
+    if (next == null) return;
+    e.preventDefault();
+    p.onSelect(p.tracks[Math.min(n - 1, Math.max(0, next))].id);
+  };
 
   const addFolder = async () => {
     const dir = await open({ directory: true, title: "Add a folder to the library" });
@@ -60,13 +149,17 @@ export function Sidebar(p: Props) {
     if (!found.length) setDeviceMsg("No GPS device with track files found. Is it connected and visible in Finder?");
   };
 
+  const [importing, setImporting] = useState(false);
   const importPicked = async () => {
     if (!p.roots.length) return setDeviceMsg("Add a library folder first.");
     let res;
+    setImporting(true);
     try {
       res = await api.importDeviceFiles(p.roots[0].id, [...picked]);
     } catch (e) {
       return setDeviceMsg(String(e));
+    } finally {
+      setImporting(false);
     }
     setDeviceMsg(
       `Imported ${res.copied.length} file(s) into ${p.roots[0].path}` +
@@ -164,7 +257,11 @@ export function Sidebar(p: Props) {
             </ul>
           </div>
         ))}
-        {devices && picked.size > 0 && <button onClick={importPicked}>Import {picked.size} file(s)</button>}
+        {devices && picked.size > 0 && (
+          <button disabled={importing} onClick={importPicked}>
+            {importing ? "Importing…" : `Import ${picked.size} file(s)`}
+          </button>
+        )}
         {deviceMsg && <div className="muted">{deviceMsg}</div>}
       </section>
 
@@ -175,42 +272,63 @@ export function Sidebar(p: Props) {
           placeholder={`Search ${p.tracks.length} tracks…`}
           value={p.query}
           onChange={(e) => p.onQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowDown" || !p.tracks.length) return;
+            e.preventDefault();
+            list.current?.focus();
+            if (selectedIndex < 0) p.onSelect(p.tracks[0].id);
+          }}
         />
-        <ul className="track-list">
-          {p.tracks.map((t) => (
-            <li
-              key={t.id}
-              data-track-id={t.id}
-              className={t.id === p.selectedId ? "selected" : undefined}
-              onClick={() => p.onSelect(t.id)}
-            >
-              <div className="track-name">
-                {activityOf(t) && (
-                  <span className="activity-icon" title={activityOf(t)!.label}>
-                    {activityOf(t)!.icon}
-                  </span>
-                )}
-                {displayName(t)}
-              </div>
-              {routeName(t) && routeName(t) !== displayName(t) && <div className="track-route">{routeName(t)}</div>}
-              <div className="track-meta">
-                {t.startTime ? new Date(t.startTime).toLocaleDateString() : "no date"} · {formatDistance(t.distanceM)} ·{" "}
-                {t.pointCount.toLocaleString()} pts
-                {t.missing && <span className="missing"> · missing</span>}
-                {t.edited && <span> · edited</span>}
-              </div>
-              {t.tags.length > 0 && (
-                <div className="track-tags">
-                  {t.tags.map((g) => (
-                    <span key={g} className="tag small">
-                      {g}
+        <div
+          ref={list}
+          className="track-list"
+          role="listbox"
+          aria-label="Tracks"
+          tabIndex={0}
+          aria-activedescendant={selectedIndex >= first && selectedIndex < last ? `track-${p.selectedId}` : undefined}
+          onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+          onKeyDown={onListKey}
+        >
+          <div style={{ height: offsets[p.tracks.length], position: "relative" }}>
+            {p.tracks.slice(first, last).map((t, k) => (
+              <div
+                key={t.id}
+                id={`track-${t.id}`}
+                role="option"
+                aria-selected={t.id === p.selectedId}
+                className={`list-row ${t.id === p.selectedId ? "selected" : ""}`}
+                data-kind={rowKind(t)}
+                style={{ top: offsets[first + k], height: offsets[first + k + 1] - offsets[first + k] }}
+                onClick={() => p.onSelect(t.id)}
+              >
+                <div className="track-name">
+                  {activityOf(t) && (
+                    <span className="activity-icon" title={activityOf(t)!.label}>
+                      {activityOf(t)!.icon}
                     </span>
-                  ))}
+                  )}
+                  {displayName(t)}
                 </div>
-              )}
-            </li>
-          ))}
-        </ul>
+                {routeLine(t) && <div className="track-route">{routeLine(t)}</div>}
+                <div className="track-meta">
+                  {t.startTime ? new Date(t.startTime).toLocaleDateString() : "no date"} · {formatDistance(t.distanceM)}{" "}
+                  · {t.pointCount.toLocaleString()} pts
+                  {t.missing && <span className="missing"> · missing</span>}
+                  {t.edited && <span> · edited</span>}
+                </div>
+                {t.tags.length > 0 && (
+                  <div className="track-tags">
+                    {t.tags.map((g) => (
+                      <span key={g} className="tag small">
+                        {g}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
     </nav>
   );

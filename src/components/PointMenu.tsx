@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { api, type PointTable } from "../api";
 import { bboxOf, confirmDelete, pointsLabel } from "../pointEditing";
 
@@ -49,10 +49,11 @@ export function PointMenu(props: Props) {
   };
 
   const splitAt = selection[0];
-  const canSplit = selection.length > 0 && splitAt > 0 && splitAt < table.length;
+  // Both parts keep at least two points: a one-point track is no line.
+  const canSplit = selection.length > 0 && splitAt >= 2 && splitAt <= table.length - 2;
 
   return (
-    <div className="context-menu" style={{ left: x, top: y }} onMouseDown={(e) => e.stopPropagation()}>
+    <MenuBox x={x} y={y}>
       <button disabled={!canSplit} onClick={() => run(() => api.splitTrack(trackId, splitAt))}>
         Split track here (new track starts at #{(splitAt ?? 0) + 1})
       </button>
@@ -70,6 +71,28 @@ export function PointMenu(props: Props) {
       >
         Zoom to selection
       </button>
+    </MenuBox>
+  );
+}
+
+/** A context menu at a click position, moved or flipped so it stays inside the window. */
+export function MenuBox({ x, y, children }: { x: number; y: number; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ left: x, top: y });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    const margin = 4;
+    const top = y + height > window.innerHeight - margin ? y - height : y;
+    setPos({
+      left: Math.max(margin, Math.min(x, window.innerWidth - width - margin)),
+      top: Math.max(margin, Math.min(top, window.innerHeight - height - margin)),
+    });
+  }, [x, y]);
+  return (
+    <div ref={ref} className="context-menu" style={pos} onMouseDown={(e) => e.stopPropagation()}>
+      {children}
     </div>
   );
 }

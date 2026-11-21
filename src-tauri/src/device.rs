@@ -1,7 +1,9 @@
 //! GPS devices in USB mass-storage mode (Garmin eTrex and most handhelds and loggers).
 //! Only well-known track folders are searched, so large data disks are never crawled.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::{Result, bail};
 use chrono::Datelike;
@@ -33,9 +35,13 @@ pub struct DeviceFile {
 
 const TRACK_DIRS: &[&str] = &["garmin", "gpx", "tracks", "track", "activity", "activities", "archive", "current"];
 
+/// Content hashes of device files by (path, size, mtime), so a repeated check does not
+/// read every file on the device again.
+pub type HashCache = HashMap<(String, u64, i64), String>;
+
 /// Volumes holding a library folder are skipped: they are archives, not devices.
-pub fn find_devices(volumes_dir: &Path, conn: &Connection) -> Result<Vec<GpsDevice>> {
-    let roots = catalog::list_roots(conn)?;
+/// `known` holds the hashes of all catalogued files.
+pub fn find_devices(volumes_dir: &Path, roots: &[Root], known: &HashSet<String>, cache: &mut HashCache) -> Result<Vec<GpsDevice>> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(volumes_dir) else { return Ok(out) };
     for entry in entries.flatten() {
@@ -55,14 +61,19 @@ pub fn find_devices(volumes_dir: &Path, conn: &Connection) -> Result<Vec<GpsDevi
                 continue;
             }
             let Ok(meta) = f.metadata() else { continue };
-            let imported = std::fs::read(f.path()).map(|b| catalog::hash_known(conn, &hash_bytes(&b))).unwrap_or(Ok(false))?;
-            files.push(DeviceFile {
-                path: f.path().to_string_lossy().into_owned(),
-                name: f.file_name().to_string_lossy().into_owned(),
-                size: meta.len(),
-                mtime: file_mtime(&meta),
-                imported,
-            });
+            let path = f.path().to_string_lossy().into_owned();
+            let (size, mtime) = (meta.len(), file_mtime(&meta));
+            let key = (path.clone(), size, mtime);
+            let hash = match cache.get(&key) {
+                Some(h) => Some(h.clone()),
+                None => std::fs::read(f.path()).ok().map(|b| {
+                    let h = hash_bytes(&b);
+                    cache.insert(key, h.clone());
+                    h
+                }),
+            };
+            let imported = hash.is_some_and(|h| known.contains(&h));
+            files.push(DeviceFile { path, name: f.file_name().to_string_lossy().into_owned(), size, mtime, imported });
         }
         if files.is_empty() {
             continue;
@@ -110,11 +121,13 @@ pub struct DeviceImportResult {
 }
 
 /// Copies device files into `<root>/<year>/` and catalogs them. The device is never modified.
-/// One failing file does not stop the others.
-pub fn import_files(conn: &mut Connection, root: &Root, files: &[String]) -> Result<DeviceImportResult> {
+/// One failing file does not stop the others. The catalog is locked only while it is
+/// queried or written, not while files are read and copied; `on_write` runs after each
+/// catalog write while the lock is still held.
+pub fn import_files(db: &Mutex<Connection>, root: &Root, files: &[String], on_write: impl Fn()) -> Result<DeviceImportResult> {
     let mut result = DeviceImportResult::default();
     for src in files {
-        match import_one(conn, root, Path::new(src)) {
+        match import_one(db, root, Path::new(src), &on_write) {
             Ok(Some(dest)) => result.copied.push(dest),
             Ok(None) => result.skipped += 1,
             Err(e) => result.failed.push(format!("{src}: {e:#}")),
@@ -129,14 +142,14 @@ fn is_current_log(path: &Path) -> bool {
 }
 
 /// Returns the library path of the copy, or `None` if the file was imported before.
-fn import_one(conn: &mut Connection, root: &Root, src: &Path) -> Result<Option<String>> {
+fn import_one(db: &Mutex<Connection>, root: &Root, src: &Path, on_write: &dyn Fn()) -> Result<Option<String>> {
     let Some(format) = Format::from_path(src) else { bail!("not a track file") };
     let parsed = process_file(src, format);
     if parsed.hash.is_empty() {
         // No hash means the file could not be read (e.g. the device was unplugged).
         bail!("{}", parsed.result.err().unwrap_or_else(|| "cannot read file".into()));
     }
-    if catalog::hash_known(conn, &parsed.hash)? {
+    if catalog::hash_known(&db.lock().unwrap(), &parsed.hash)? {
         return Ok(None);
     }
     let first_start = parsed.result.as_ref().ok().and_then(|f| f.tracks.first()).and_then(|t| t.stats.start_time);
@@ -177,7 +190,9 @@ fn import_one(conn: &mut Connection, root: &Root, src: &Path) -> Result<Option<S
         format: parsed.format,
         result: parsed.result,
     };
-    catalog::write_import(conn, root.id, &imp)?;
+    let mut conn = db.lock().unwrap();
+    catalog::write_import(&mut conn, root.id, &imp)?;
+    on_write();
     Ok(Some(imp.path))
 }
 
@@ -216,21 +231,22 @@ mod tests {
         let (lib, dev) = (dir.join("lib"), dir.join("dev/Garmin/GPX/Current"));
         std::fs::create_dir_all(&lib).unwrap();
         std::fs::create_dir_all(&dev).unwrap();
-        let mut conn = catalog::open(&dir.join("c.sqlite")).unwrap();
+        let conn = catalog::open(&dir.join("c.sqlite")).unwrap();
         let root = catalog::add_root(&conn, lib.to_str().unwrap()).unwrap();
+        let conn = Mutex::new(conn);
 
         let missing = dev.join("gone.gpx").to_string_lossy().into_owned();
-        let r = import_files(&mut conn, &root, &[missing]).unwrap();
+        let r = import_files(&conn, &root, &[missing], || ()).unwrap();
         assert_eq!((r.copied.len(), r.skipped, r.failed.len()), (0, 0, 1));
 
         let pt = |m: u32| format!(r#"<trkpt lat="50.0{m}" lon="8.0"><time>2024-01-01T10:0{m}:00Z</time></trkpt>"#);
         let current = dev.join("Current.gpx");
         std::fs::write(&current, format!("<gpx><trk><trkseg>{}{}</trkseg></trk></gpx>", pt(1), pt(2))).unwrap();
-        let first = import_files(&mut conn, &root, &[current.to_string_lossy().into_owned()]).unwrap();
+        let first = import_files(&conn, &root, &[current.to_string_lossy().into_owned()], || ()).unwrap();
         std::fs::write(&current, format!("<gpx><trk><trkseg>{}{}{}</trkseg></trk></gpx>", pt(1), pt(2), pt(3))).unwrap();
-        let second = import_files(&mut conn, &root, &[current.to_string_lossy().into_owned()]).unwrap();
+        let second = import_files(&conn, &root, &[current.to_string_lossy().into_owned()], || ()).unwrap();
         assert_eq!(first.copied, second.copied, "the grown log replaces the earlier copy");
-        assert_eq!(catalog::list_tracks(&conn).unwrap().len(), 1);
+        assert_eq!(catalog::list_tracks(&conn.lock().unwrap()).unwrap().len(), 1);
         assert_eq!(std::fs::read_dir(lib.join("2024")).unwrap().count(), 1, "no partial or duplicate files");
         std::fs::remove_dir_all(&dir).ok();
     }

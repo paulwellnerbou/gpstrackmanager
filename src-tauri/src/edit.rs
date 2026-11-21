@@ -153,8 +153,8 @@ pub fn delete_points(conn: &mut Connection, track_id: i64, indices: &[u32]) -> R
 /// Returns the new track's id.
 pub fn split(conn: &mut Connection, track_id: i64, at: u32) -> Result<i64> {
     let n = catalog::load_track_data(conn, track_id)?.coords.len() as u32;
-    if at == 0 || at >= n {
-        bail!("Cannot split at the first or after the last point.");
+    if at < 2 || at + 2 > n {
+        bail!("Both tracks need at least two points.");
     }
     extract(conn, track_id, at, n)
 }
@@ -165,8 +165,8 @@ pub fn extract(conn: &mut Connection, track_id: i64, start: u32, end: u32) -> Re
     let data = catalog::load_track_data(conn, track_id)?;
     let (n, start, end) = (data.coords.len(), start as usize, (end as usize).min(data.coords.len()));
     let rest: Vec<usize> = (0..start).chain(end..n).collect();
-    if rest.is_empty() || end <= start {
-        bail!("Nothing would remain in the original track.");
+    if rest.len() < 2 || end < start + 2 {
+        bail!("Both tracks need at least two points.");
     }
     let first = process(subset(&data, &rest));
     let second = process(subset(&data, &(start..end).collect::<Vec<_>>()));
