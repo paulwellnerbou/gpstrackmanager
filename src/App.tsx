@@ -15,7 +15,7 @@ import {
 } from "./api";
 import { DEFAULT_MARKER_OPTIONS, type MarkerOptions } from "./components/trackMarkers";
 import { MarkerMenu } from "./components/MarkerMenu";
-import { DEFAULT_MAP_OPTIONS, MapMenu, TRACK_COLORS, type MapOptions } from "./components/MapMenu";
+import { DEFAULT_MAP_OPTIONS, MAP_THEMES, MapMenu, TRACK_COLORS, type MapOptions } from "./components/MapMenu";
 import { PointMenu } from "./components/PointMenu";
 import { EMPTY_SELECTION, type PointSelection } from "./pointEditing";
 import { Sidebar } from "./components/Sidebar";
@@ -334,8 +334,10 @@ function loadMapOptions(): MapOptions {
     if (raw) {
       const o: MapOptions = { ...DEFAULT_MAP_OPTIONS, ...JSON.parse(raw) };
       // Unknown stored values would break the style lookup or line paint.
-      if (!(o.trackColor in TRACK_COLORS)) o.trackColor = DEFAULT_MAP_OPTIONS.trackColor;
-      if (!["auto", "light", "dark", "black"].includes(o.theme)) o.theme = DEFAULT_MAP_OPTIONS.theme;
+      if (!Object.prototype.hasOwnProperty.call(TRACK_COLORS, o.trackColor)) {
+        o.trackColor = DEFAULT_MAP_OPTIONS.trackColor;
+      }
+      if (!MAP_THEMES.some((t) => t.value === o.theme)) o.theme = DEFAULT_MAP_OPTIONS.theme;
       return o;
     }
   } catch {

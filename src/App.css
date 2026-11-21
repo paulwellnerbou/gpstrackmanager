@@ -712,7 +712,9 @@ main {
   border-radius: 50%;
   border: 2px solid var(--border);
 }
-.swatch.active {
+/* :hover too, or the global button hover rule repaints the selection ring. */
+.swatch.active,
+.swatch.active:hover {
   border-color: var(--text);
   box-shadow: 0 0 0 2px var(--panel) inset;
 }

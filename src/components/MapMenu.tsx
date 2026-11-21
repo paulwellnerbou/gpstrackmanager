@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 export type MapTheme = "auto" | "light" | "dark" | "black";
-export type TrackColor = "violet" | "blue" | "teal" | "orange";
+export type TrackColor = "violet" | "blue" | "teal" | "green";
 
 export interface MapOptions {
   theme: MapTheme;
@@ -15,10 +15,10 @@ export const TRACK_COLORS: Record<TrackColor, { label: string; light: string; da
   violet: { label: "Violet", light: "#6741d9", dark: "#b197fc" },
   blue: { label: "Blue", light: "#1971c2", dark: "#74c0fc" },
   teal: { label: "Teal", light: "#0c8599", dark: "#3bc9db" },
-  orange: { label: "Orange", light: "#e8590c", dark: "#ffa94d" },
+  green: { label: "Green", light: "#2b8a3e", dark: "#8ce99a" },
 };
 
-const THEMES: { value: MapTheme; label: string; title: string }[] = [
+export const MAP_THEMES: { value: MapTheme; label: string; title: string }[] = [
   { value: "auto", label: "Auto", title: "Follow the system light/dark setting" },
   { value: "light", label: "Light", title: "Light map" },
   { value: "dark", label: "Dark", title: "Blue-grey dark map" },
@@ -49,7 +49,7 @@ export function MapMenu({ options, onChange }: Props) {
         <div className="marker-panel">
           <div className="marker-group">Map theme</div>
           <div className="segmented">
-            {THEMES.map((t) => (
+            {MAP_THEMES.map((t) => (
               <button
                 key={t.value}
                 title={t.title}

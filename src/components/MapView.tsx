@@ -44,9 +44,11 @@ function trackPaint(brightness: Brightness, color: TrackColor, dimmed: boolean) 
   const dark = brightness === "dark";
   return {
     overview: TRACK_COLORS[color][brightness],
-    // Dimmed tracks keep their hue so they stay findable next to the selected one.
-    overviewOpacity: dimmed ? (dark ? 0.55 : 0.4) : dark ? 0.9 : 0.7,
-    overviewWidth: dark ? 2 : 1.75,
+    // Dimmed tracks keep their hue so they stay findable, but thin and faint enough that
+    // even a short selected track stands out among them.
+    overviewOpacity: dimmed ? (dark ? 0.4 : 0.3) : dark ? 0.9 : 0.7,
+    overviewWidth: dimmed ? (dark ? 1.5 : 1.25) : dark ? 2 : 1.75,
+    /** Selected track line, its point dots and the profile cursor. */
     detail: dark ? "#ff6b9a" : "#d6336c",
     // A white halo glares on a dark map; a dark one separates the line just as well.
     casing: dark ? "#14131a" : "#ffffff",
@@ -116,7 +118,7 @@ function addOwnLayers(map: MapLibreMap, paint: ReturnType<typeof trackPaint>) {
     source: "dots",
     paint: {
       "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 2.5, 18, 4.5],
-      "circle-color": "#d6336c",
+      "circle-color": paint.detail,
       "circle-stroke-color": "#ffffff",
       "circle-stroke-width": 1,
     },
@@ -131,7 +133,7 @@ function addOwnLayers(map: MapLibreMap, paint: ReturnType<typeof trackPaint>) {
     id: "cursor",
     type: "circle",
     source: "cursor",
-    paint: { "circle-radius": 6, "circle-color": "#d6336c", "circle-stroke-color": "#fff", "circle-stroke-width": 2 },
+    paint: { "circle-radius": 6, "circle-color": paint.detail, "circle-stroke-color": "#fff", "circle-stroke-width": 2 },
   });
 }
 
@@ -346,7 +348,8 @@ export function MapView({
     return () => {
       cancelled = true;
     };
-  }, [showBaseMap, baseStyle, brightness, ready]);
+    // Without a base map only the brightness matters; Dark and Black share the blank style.
+  }, [showBaseMap, showBaseMap && baseStyle, brightness, ready]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -369,6 +372,8 @@ export function MapView({
       map.setPaintProperty("overview", "line-width", paint.overviewWidth);
       map.setPaintProperty("detail", "line-color", paint.detail);
       map.setPaintProperty("detail-casing", "line-color", paint.casing);
+      map.setPaintProperty("dots", "circle-color", paint.detail);
+      map.setPaintProperty("cursor", "circle-color", paint.detail);
     });
   }, [paint.overview, paint.overviewOpacity, paint.overviewWidth, paint.detail, paint.casing, ready]);
 
