@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type CSSProperties } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   activityOf,
@@ -21,6 +21,7 @@ import { Sidebar } from "./components/Sidebar";
 import { MapView } from "./components/MapView";
 import { Profile } from "./components/Profile";
 import { Details } from "./components/Details";
+import { PaneResizer } from "./components/PaneResizer";
 import "./App.css";
 
 export default function App() {
@@ -48,6 +49,8 @@ export default function App() {
   // Bumped after point edits so map, profile and point list reload the track's data.
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarWidth, setSidebarWidth] = usePaneWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_DEFAULT, SIDEBAR_MIN);
+  const [detailsWidth, setDetailsWidth] = usePaneWidth(DETAILS_WIDTH_KEY, DETAILS_DEFAULT, DETAILS_MIN);
 
   const reloadCatalog = useCallback(async () => {
     try {
@@ -198,11 +201,32 @@ export default function App() {
     }
   };
 
+  // Stored widths are preferences; what is shown is limited so the map keeps MAP_MIN when
+  // the window is small or the details pane opens, and the details pane gives way last.
+  const hasDetails = selected != null;
+  const windowWidth = useWindowWidth(sidebarWidth + (hasDetails ? detailsWidth : 0) + MAP_MIN);
+  const room = windowWidth - MAP_MIN;
+  const shownDetails = hasDetails ? clampWidth(detailsWidth, DETAILS_MIN, room - SIDEBAR_MIN) : 0;
+  const shownSidebar = clampWidth(sidebarWidth, SIDEBAR_MIN, room - shownDetails);
+  // Resizing one pane also keeps the other as shown, so a pane squeezed earlier does not
+  // spring back to its old preference when the user makes room for the map.
+  const resizeSidebar = (w: number) => {
+    setSidebarWidth(w);
+    if (hasDetails) setDetailsWidth(shownDetails);
+  };
+  const resizeDetails = (w: number) => {
+    setDetailsWidth(w);
+    setSidebarWidth(shownSidebar);
+  };
+
   const patchTrack = (id: number, patch: Partial<TrackSummary>) =>
     setTracks((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
 
   return (
-    <div className={`app ${selected ? "with-details" : ""}`}>
+    <div
+      className={`app ${selected ? "with-details" : ""}`}
+      style={{ "--sidebar-w": `${shownSidebar}px`, "--details-w": `${shownDetails}px` } as CSSProperties}
+    >
       <Sidebar
         roots={roots}
         tracks={filtered}
@@ -216,6 +240,16 @@ export default function App() {
         onScan={(id) => api.scanRoot(id).catch((e) => setError(String(e)))}
         onImported={reloadCatalog}
         onError={setError}
+      />
+      <PaneResizer
+        side="left"
+        label="Resize library pane"
+        cssVar="--sidebar-w"
+        width={shownSidebar}
+        defaultWidth={SIDEBAR_DEFAULT}
+        min={SIDEBAR_MIN}
+        max={() => window.innerWidth - MAP_MIN - shownDetails}
+        onChange={resizeSidebar}
       />
       <main>
         <div className="toolbar">
@@ -274,6 +308,18 @@ export default function App() {
         <Profile track={selected} version={version} onCursor={setCursor} />
       </main>
       {selected && (
+        <PaneResizer
+          side="right"
+          label="Resize details pane"
+          cssVar="--details-w"
+          width={shownDetails}
+          defaultWidth={DETAILS_DEFAULT}
+          min={DETAILS_MIN}
+          max={() => window.innerWidth - MAP_MIN - shownSidebar}
+          onChange={resizeDetails}
+        />
+      )}
+      {selected && (
         <Details
           track={selected}
           allTags={allTags}
@@ -322,4 +368,58 @@ function loadMarkerOptions(): MarkerOptions {
     // Fall through to defaults.
   }
   return DEFAULT_MARKER_OPTIONS;
+}
+
+const SIDEBAR_WIDTH_KEY = "sidebarWidth";
+const DETAILS_WIDTH_KEY = "detailsWidth";
+const SIDEBAR_DEFAULT = 300;
+const DETAILS_DEFAULT = 340;
+const SIDEBAR_MIN = 200;
+// The point table's fixed columns plus a full "lat, lon" pair need about this much.
+const DETAILS_MIN = 310;
+const MAP_MIN = 320;
+
+const clampWidth = (w: number, min: number, max: number) => Math.max(min, Math.min(max, w));
+
+/**
+ * The window width, capped at `cap`: resizes above the cap change nothing visible, so they
+ * skip re-rendering the app.
+ */
+function useWindowWidth(cap: number) {
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const width = Math.min(window.innerWidth, cap);
+  const shown = useRef(width);
+  shown.current = width;
+  useEffect(() => {
+    const onResize = () => {
+      if (Math.min(window.innerWidth, cap) !== shown.current) rerender();
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [cap]);
+  return width;
+}
+
+function usePaneWidth(key: string, fallback: number, min: number) {
+  const [width, setWidth] = useState(() => {
+    try {
+      const n = Number(localStorage.getItem(key));
+      if (Number.isFinite(n) && n >= min) return n;
+    } catch {
+      // Fall through to the default.
+    }
+    return fallback;
+  });
+  const change = useCallback(
+    (w: number) => {
+      setWidth(w);
+      try {
+        localStorage.setItem(key, String(w));
+      } catch {
+        // Widths are a convenience; without storage they just reset on restart.
+      }
+    },
+    [key],
+  );
+  return [width, change] as const;
 }
