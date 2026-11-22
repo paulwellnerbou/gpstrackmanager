@@ -165,7 +165,7 @@ fn import_one(db: &Mutex<Connection>, root: &Root, src: &Path, on_write: &dyn Fn
     // instead of piling up Current-1.gpx, Current-2.gpx, … with duplicated tracks.
     let dest = if is_current_log(src) {
         let day = when.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "unknown".into());
-        dir.join(format!("Current_{day}.gpx"))
+        current_log_dest(&db.lock().unwrap(), &dir, &day)?
     } else {
         unique_dest(&dir, src)?
     };
@@ -200,6 +200,18 @@ fn import_one(db: &Mutex<Connection>, root: &Root, src: &Path, on_write: &dyn Fn
     catalog::write_import(&mut conn, root.id, &imp)?;
     on_write();
     Ok(Some(imp.path))
+}
+
+/// The copy of a day's log to replace. One written by "Write to file" holds the user's
+/// edits and is never replaced; the grown log goes into the next name instead.
+fn current_log_dest(conn: &Connection, dir: &Path, day: &str) -> Result<PathBuf> {
+    for n in 0..1000 {
+        let dest = dir.join(if n == 0 { format!("Current_{day}.gpx") } else { format!("Current_{day}-{n}.gpx") });
+        if !dest.exists() || !catalog::was_written(conn, &dest.to_string_lossy())? {
+            return Ok(dest);
+        }
+    }
+    bail!("too many written copies of the {day} log")
 }
 
 fn unique_dest(dir: &Path, src: &Path) -> Result<PathBuf> {
@@ -254,6 +266,53 @@ mod tests {
         assert_eq!(first.copied, second.copied, "the grown log replaces the earlier copy");
         assert_eq!(catalog::list_tracks(&conn.lock().unwrap()).unwrap().len(), 1);
         assert_eq!(std::fs::read_dir(lib.join("2024")).unwrap().count(), 1, "no partial or duplicate files");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn written_files_stay_imported_and_keep_their_edits() {
+        let dir = std::env::temp_dir().join(format!("gtm-dev-written-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (lib, dev) = (dir.join("lib"), dir.join("dev/Garmin/GPX"));
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(dev.join("Current")).unwrap();
+        let conn = catalog::open(&dir.join("c.sqlite")).unwrap();
+        let root = catalog::add_root(&conn, lib.to_str().unwrap()).unwrap();
+        let conn = Mutex::new(conn);
+        let pt = |m: u32| format!(r#"<trkpt lat="50.0{m}" lon="8.0"><time>2024-01-01T10:0{m}:00Z</time></trkpt>"#);
+        let log = |n: u32| format!("<gpx><trk><trkseg>{}</trkseg></trk></gpx>", (1..=n).map(pt).collect::<String>());
+        let import = |f: &Path| import_files(&conn, &root, &[f.to_string_lossy().into_owned()], || ()).unwrap();
+        let file_of = |path: &str| {
+            let c = conn.lock().unwrap();
+            let t = catalog::list_tracks(&c).unwrap().into_iter().find(|t| t.file_path == path).unwrap();
+            (t.id, t.file_id)
+        };
+        let edit_and_write = |path: &str| {
+            let (track, file) = file_of(path);
+            let mut c = conn.lock().unwrap();
+            crate::edit::delete_points(&mut c, track, &[0]).unwrap();
+            crate::edit::write_to_file(&mut c, file).unwrap();
+        };
+
+        let walk = dev.join("walk.gpx");
+        std::fs::write(&walk, log(4)).unwrap();
+        let copied = import(&walk).copied;
+        edit_and_write(&copied[0]);
+        assert_eq!(import(&walk).skipped, 1, "the device file is still the one imported");
+        let known = catalog::all_hashes(&conn.lock().unwrap()).unwrap();
+        assert!(known.contains(&hash_bytes(&std::fs::read(&walk).unwrap())));
+
+        let current = dev.join("Current/Current.gpx");
+        std::fs::write(&current, log(3)).unwrap();
+        let written = import(&current).copied[0].clone();
+        edit_and_write(&written);
+        let edited = std::fs::read(&written).unwrap();
+        std::fs::write(&current, log(5)).unwrap();
+        let grown = import(&current).copied[0].clone();
+        assert!(grown.ends_with("Current_2024-01-01-1.gpx"), "{grown}");
+        assert_eq!(std::fs::read(&written).unwrap(), edited, "the written copy keeps its edits");
+        std::fs::write(&current, log(6)).unwrap();
+        assert_eq!(import(&current).copied[0], grown, "the unedited copy is replaced as before");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

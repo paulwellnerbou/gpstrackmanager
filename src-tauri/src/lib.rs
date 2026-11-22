@@ -109,7 +109,7 @@ async fn remove_root(app: AppHandle, id: i64) -> CmdResult<()> {
 async fn scan_root(app: AppHandle, id: i64) -> CmdResult<()> {
     let s = app.state::<AppState>();
     if s.scanning.swap(true, Ordering::SeqCst) {
-        return Err("A sync is already running.".into());
+        return Err("A sync or a write to a file is already running.".into());
     }
     let (db_path, scanning) = (s.db_path.clone(), s.scanning.clone());
     let app = app.clone();
@@ -263,6 +263,24 @@ async fn list_file_waypoints(app: AppHandle, file_id: i64) -> CmdResult<Vec<cata
 #[tauri::command]
 async fn revert_file(app: AppHandle, file_id: i64) -> CmdResult<()> {
     blocking(app, move |s| s.write(|c| edit::revert_file(c, file_id))).await
+}
+
+/// Not during a sync, which reads files before it catalogs them and would store the file
+/// as it was; a sync started meanwhile is refused. Device imports wait, as one may replace
+/// a library copy of the device's track log.
+#[tauri::command]
+async fn write_file_edits(app: AppHandle, file_id: i64) -> CmdResult<edit::WrittenFile> {
+    let scanning = app.state::<AppState>().scanning.clone();
+    if scanning.swap(true, Ordering::SeqCst) {
+        return Err("A sync is running. Write to the file once it has finished.".into());
+    }
+    let result = blocking(app, move |s| {
+        let _importing = s.importing.lock().unwrap();
+        s.write(|c| edit::write_to_file(c, file_id))
+    })
+    .await;
+    scanning.store(false, Ordering::SeqCst);
+    result
 }
 
 struct TrackRef {
@@ -430,6 +448,7 @@ pub fn run() {
             clean_up_track,
             split_track,
             revert_file,
+            write_file_edits,
             last_edit,
             undo_edit,
             extract_track_range,

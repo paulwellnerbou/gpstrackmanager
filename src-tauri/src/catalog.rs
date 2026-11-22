@@ -93,6 +93,11 @@ CREATE TABLE IF NOT EXISTS track_tags(
   tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
   PRIMARY KEY(track_id, tag_id)
 );
+CREATE TABLE IF NOT EXISTS written_hashes( -- contents a file had before "Write to file" replaced it
+  hash TEXT NOT NULL,
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  PRIMARY KEY(hash, file_id)
+);
 CREATE TABLE IF NOT EXISTS edit_undo(  -- point edits that can be undone, newest last per file
   id INTEGER PRIMARY KEY,
   file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -251,14 +256,34 @@ pub fn known_files(conn: &Connection, root_id: i64) -> Result<HashMap<String, Kn
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Also true for contents a file had before it was written: the device still holds them.
 pub fn hash_known(conn: &Connection, hash: &str) -> Result<bool> {
-    Ok(conn.query_row("SELECT 1 FROM files WHERE hash = ?1 LIMIT 1", [hash], |_| Ok(())).optional()?.is_some())
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM files WHERE hash = ?1 UNION ALL SELECT 1 FROM written_hashes WHERE hash = ?1 LIMIT 1",
+            [hash],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
 }
 
 pub fn all_hashes(conn: &Connection) -> Result<std::collections::HashSet<String>> {
-    let mut st = conn.prepare("SELECT hash FROM files WHERE hash IS NOT NULL")?;
+    let mut st = conn.prepare("SELECT hash FROM files WHERE hash IS NOT NULL UNION SELECT hash FROM written_hashes")?;
     let rows = st.query_map([], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Whether "Write to file" replaced the catalogued file at `path`, so it holds the user's edits.
+pub fn was_written(conn: &Connection, path: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM written_hashes w JOIN files f ON f.id = w.file_id WHERE f.path = ?1 LIMIT 1",
+            [path],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
 }
 
 fn now_ms() -> i64 {
