@@ -132,7 +132,7 @@ export function CleanupPanel(p: Props) {
     try {
       await api.cleanUpTrack(
         trackId,
-        preview?.radiusM ?? null,
+        findStays ? (preview?.radiusM ?? null) : null,
         preview?.minDurationS ?? 0,
         settings.zeros,
         settings.spikes,
