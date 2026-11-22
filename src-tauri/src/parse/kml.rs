@@ -91,7 +91,8 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
                         (geom, geom_depth) = (Geom::Track, depth);
                         p.segments.push(Segment::default());
                     }
-                    "TimeStamp" if geom == Geom::None => timestamp_depth = Some(depth),
+                    // Only the Placemark's own; a LookAt or Camera may carry one for the imagery date.
+                    "TimeStamp" if geom == Geom::None && depth == p.depth + 1 => timestamp_depth = Some(depth),
                     tag if capture == Capture::None => {
                         let what = match tag {
                             "name" if depth == p.depth + 1 => Capture::Name,
@@ -134,7 +135,7 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
                             }
                             Capture::When => p.when = parse_time(value),
                             Capture::GxCoord => {
-                                if let (Some(s), Some(c)) = (p.segments.last_mut(), parse_tuple(value, ' ')) {
+                                if let (Some(s), Some(c)) = (p.segments.last_mut(), parse_tuple(value.split_ascii_whitespace())) {
                                     s.coords.push(c);
                                 }
                             }
@@ -199,11 +200,11 @@ fn track(p: Placemark) -> ParsedTrack {
 
 /// `lon,lat[,alt]` tuples separated by whitespace.
 fn parse_coordinates(s: &str) -> Vec<Coord> {
-    s.split_ascii_whitespace().filter_map(|t| parse_tuple(t, ',')).collect()
+    s.split_ascii_whitespace().filter_map(|t| parse_tuple(t.split(','))).collect()
 }
 
-fn parse_tuple(t: &str, sep: char) -> Option<Coord> {
-    let mut it = t.split(sep).filter(|v| !v.is_empty());
+fn parse_tuple<'a>(fields: impl Iterator<Item = &'a str>) -> Option<Coord> {
+    let mut it = fields.filter(|v| !v.is_empty());
     let lon = it.next()?.trim().parse::<f64>().ok()?;
     let lat = it.next()?.trim().parse::<f64>().ok()?;
     let ele = it.next().and_then(|v| v.trim().parse::<f32>().ok()).filter(|v| v.is_finite());
@@ -215,6 +216,8 @@ fn parse_tuple(t: &str, sep: char) -> Option<Coord> {
 /// of untimed tracks, in order, and the placemarks are returned as used so they do not turn
 /// into hundreds of waypoints. The names have no zone; ezTour used the computer's, so the
 /// local zone of this computer is the best guess.
+const LOOKAHEAD: usize = 16;
+
 fn holux_point_times(tracks: &mut [ParsedTrack], waypoints: &[Waypoint]) -> Vec<bool> {
     let mut used = vec![false; waypoints.len()];
     let stamps: Vec<(usize, i64)> = waypoints
@@ -230,12 +233,16 @@ fn holux_point_times(tracks: &mut [ParsedTrack], waypoints: &[Waypoint]) -> Vec<
     for t in tracks.iter_mut().filter(|t| t.points.time.iter().all(|&x| x == NO_TIME)) {
         let p = &mut t.points;
         for i in 0..p.len() {
-            let Some(&(w, ms)) = stamps.get(j) else { break };
-            let wp = &waypoints[w];
-            if (wp.lat - p.lat[i]).abs() < 1e-6 && (wp.lon - p.lon[i]).abs() < 1e-6 {
+            // A few placemarks off the line (the user's own, or ones the line skips) must not
+            // stop the matching for all later points.
+            let hit = stamps[j..].iter().take(LOOKAHEAD).position(|&(w, _)| {
+                (waypoints[w].lat - p.lat[i]).abs() < 1e-6 && (waypoints[w].lon - p.lon[i]).abs() < 1e-6
+            });
+            if let Some(k) = hit {
+                let (w, ms) = stamps[j + k];
                 p.time[i] = ms;
                 used[w] = true;
-                j += 1;
+                j += k + 1;
             }
         }
     }
@@ -255,6 +262,7 @@ mod tests {
     fn reads_lines_multigeometry_points_and_skips_polygons() {
         let kml = r#"<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Doc</name>
             <Placemark><name>Start</name><TimeStamp><when>2008-01-01T10:00:00Z</when></TimeStamp>
+              <LookAt><gx:TimeStamp><when>2001-01-01T00:00:00Z</when></gx:TimeStamp></LookAt>
               <Point><coordinates>8.5,50.0,185.8</coordinates></Point></Placemark>
             <Folder><name>Tracks</name>
             <Placemark><name>Flight &amp; back</name><description><![CDATA[<b>x</b>]]></description>
@@ -285,7 +293,8 @@ mod tests {
     fn reads_gx_tracks() {
         let kml = r#"<kml xmlns:gx="http://www.google.com/kml/ext/2.2"><Placemark><name>Run</name><gx:MultiTrack>
             <gx:Track><when>2020-05-01T10:00:00Z</when><when>2020-05-01T10:00:05Z</when>
-              <gx:coord>13.4 52.5 34</gx:coord><gx:coord>13.41 52.51 35</gx:coord></gx:Track>
+              <gx:coord>13.4	52.5
+  34</gx:coord><gx:coord>13.41 52.51 35</gx:coord></gx:Track>
             <gx:Track><when>2020-05-01T11:00:00Z</when><gx:coord>13.5 52.6 30</gx:coord></gx:Track>
             </gx:MultiTrack></Placemark></kml>"#;
         let f = parse(kml.as_bytes()).unwrap();
@@ -304,7 +313,8 @@ mod tests {
         let kml = format!(
             "<kml><Document><Placemark><name>Route</name><MultiGeometry><LineString><coordinates>\
              7.7567492,46.3641853,1224.78 7.7577577,46.3643608,1265.97 7.7577577,46.3643608,1265.9 </coordinates>\
-             </LineString></MultiGeometry></Placemark><Folder><name>waypoints</name>{}{}{}{}</Folder></Document></kml>",
+             </LineString></MultiGeometry></Placemark><Folder><name>waypoints</name>{}{}{}{}{}</Folder></Document></kml>",
+            point("Sun Jul 19 09:00:00 2009", "7.9,46.5,1000"),
             point("Mon Jul 20 13:36:26 2009", "7.7567492,46.3641853,1224.78"),
             point("Mon Jul 20 13:36:31 2009", "7.7577577,46.3643608,1265.97"),
             point("Mon Jul 20 13:36:33 2009", "7.7577577,46.3643608,1265.9"),
@@ -314,7 +324,7 @@ mod tests {
         let p = &f.tracks[0].points;
         let local = |s| local_ctime(s).unwrap();
         assert_eq!(p.time, vec![local("Mon Jul 20 13:36:26 2009"), local("Mon Jul 20 13:36:31 2009"), local("Mon Jul 20 13:36:33 2009")]);
-        assert_eq!(f.waypoints.len(), 1);
-        assert_eq!(f.waypoints[0].name.as_deref(), Some("Summit"));
+        let names: Vec<_> = f.waypoints.iter().map(|w| w.name.as_deref().unwrap()).collect();
+        assert_eq!(names, vec!["Sun Jul 19 09:00:00 2009", "Summit"], "the stray stamp stays a waypoint");
     }
 }

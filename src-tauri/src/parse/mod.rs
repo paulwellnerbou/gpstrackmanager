@@ -82,7 +82,8 @@ fn zip_entry(bytes: &[u8], pick: impl Fn(&str) -> bool) -> Result<Vec<u8>> {
         .ok_or_else(|| anyhow!("no track data in the archive"))?;
     let mut entry = zip.by_index(index)?;
     let name = entry.name().map(|n| n.trim_end_matches('\0').to_string()).unwrap_or_default();
-    let mut out = Vec::with_capacity(entry.size() as usize);
+    // The size comes from the archive header; a corrupt one must not reserve gigabytes.
+    let mut out = Vec::with_capacity(entry.size().min(64 << 20) as usize);
     entry.read_to_end(&mut out).with_context(|| format!("cannot unpack {name}"))?;
     Ok(out)
 }

@@ -6,7 +6,8 @@ const RECORD: usize = 16;
 
 /// Holux M-241 log: 16-byte records of UTC seconds (u32), latitude and longitude (f32),
 /// altitude as an f32 without its lowest byte, and an XOR checksum over the other 15 bytes.
-/// Records with a wrong checksum are skipped.
+/// Records with a wrong checksum are skipped; a file where most of them fail is something
+/// else, since one in 256 random records passes by chance.
 pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
     let mut points = Points::default();
     let mut valid = 0usize;
@@ -24,8 +25,9 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
             points.push(lat, lon, ele, (time > 0).then_some(time as i64 * 1000));
         }
     }
-    if valid == 0 && !bytes.is_empty() {
-        bail!("not a Holux track log: no valid record");
+    let records = bytes.len() / RECORD;
+    if !bytes.is_empty() && valid * 2 <= records {
+        bail!("not a Holux track log: {valid} of {records} records are valid");
     }
     Ok(ParsedFile {
         tracks: vec![ParsedTrack { name: None, description: None, activity: None, points }],
@@ -64,5 +66,8 @@ mod tests {
     #[test]
     fn rejects_other_binary_files() {
         assert!(parse(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?><gpx></gpx>").is_err());
+        let mut lucky = record(1207926092, 50.125, 8.5, 191.25);
+        lucky.extend(1..=2 * RECORD as u8);
+        assert!(parse(&lucky).is_err(), "one valid record among garbage is not a log");
     }
 }

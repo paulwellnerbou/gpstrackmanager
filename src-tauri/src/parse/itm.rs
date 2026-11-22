@@ -1,9 +1,7 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 
 use crate::model::{ParsedFile, ParsedTrack, Points, Waypoint};
 
@@ -23,8 +21,9 @@ struct Wp {
 /// is a track whose points (`WP`, linked by `fNextID`) carry their time in `GPSLog`; `POI`
 /// rows are waypoints. Points ezTour deleted stay in the table with parent 0.
 pub fn parse(db: &[u8]) -> Result<ParsedFile> {
-    let tmp = TempDb::new(db)?;
-    let conn = Connection::open_with_flags(&tmp.0, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+    // In memory: a temporary file would put the location history where others may read it.
+    let mut conn = Connection::open_in_memory()?;
+    conn.deserialize_read_exact("main", db, db.len(), true).context("not a Holux ezTour project")?;
 
     let mut by_line: HashMap<i64, Vec<Wp>> = HashMap::new();
     let mut st = conn
@@ -75,9 +74,9 @@ pub fn parse(db: &[u8]) -> Result<ParsedFile> {
     let mut rows = st.query([])?;
     while let Some(r) = rows.next()? {
         let valid = |lat: Option<f64>, lon: Option<f64>| {
-            lat.zip(lon).filter(|(a, o)| a.abs() <= 90.0 && o.abs() <= 180.0 && !(*a == -1.0 && *o == -1.0))
+            lat.zip(lon).filter(|&(a, o)| a.abs() <= 90.0 && o.abs() <= 180.0 && (a, o) != (-1.0, -1.0) && (a, o) != (0.0, 0.0))
         };
-        // fLatitude/fLongitude are map positions (-1 on the global map); fReal* is the position.
+        // fReal* is the position, 0/0 when unset; fLatitude/fLongitude are -1 on the global map.
         let Some((lat, lon)) = valid(r.get(1)?, r.get(2)?).or(valid(r.get(3)?, r.get(4)?)) else { continue };
         let name: Option<String> = r.get(0)?;
         waypoints.push(Waypoint {
@@ -125,25 +124,6 @@ fn filetime(hi: Option<i64>, lo: Option<i64>) -> Option<i64> {
     (ms > 0).then_some(ms)
 }
 
-/// SQLite reads databases from files only.
-struct TempDb(PathBuf);
-
-impl TempDb {
-    fn new(bytes: &[u8]) -> Result<TempDb> {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("gpstrackmanager-itm-{}-{n}.sqlite", std::process::id()));
-        std::fs::write(&path, bytes).context("cannot unpack the ezTour database")?;
-        Ok(TempDb(path))
-    }
-}
-
-impl Drop for TempDb {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,7 +147,8 @@ mod tests {
              INSERT INTO WP VALUES (1,0,1,4,1,1,-1,-1,7.626297,46.744408,564.4,0), (2,0,1,0,2,1,-1,-1,7.63,46.75,565,0),
                (3,0,0,0,3,1,-1,-1,1,1,1,0), (4,0,1,2,0,1,-1,-1,7.627,46.745,564.5,0);
              INSERT INTO GPSLog VALUES (1,0,30254041,1103156864,0), (2,0,30254041,1123156864,0), (3,0,0,0,0);
-             INSERT INTO POI VALUES (1,0,'Lat:46.397266',1,0,-1,-1,7.332787,46.397266,1380.23);
+             INSERT INTO POI VALUES (1,0,'Lat:46.397266',1,0,-1,-1,7.332787,46.397266,1380.23),
+               (2,0,'Unset',1,0,-1,-1,0,0,0);
              INSERT INTO PropInt VALUES (1,0,'t1',9,1,0,30302270), (2,0,'t2',9,1,0,165438080),
                (3,0,'t1',11,1,0,1), (4,0,'t2',11,1,0,1);",
         )
@@ -189,6 +170,7 @@ mod tests {
         assert_eq!(t.points.time[0], 1349538177000);
         assert_eq!(t.points.time[1], crate::model::NO_TIME);
         assert_eq!(t.points.time[2], 1349538179000);
+        assert_eq!(f.waypoints.len(), 1, "a POI without a position is skipped");
         let w = &f.waypoints[0];
         assert_eq!((w.lat, w.lon, w.ele), (46.397266, 7.332787, Some(1380.23)));
         assert_eq!(w.time, Some(1370252281000));
