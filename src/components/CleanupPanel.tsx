@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, formatDuration, type PointTable, type Stay } from "../api";
 import { bboxOf, pointsLabel, type PointSelection } from "../pointEditing";
+import { spansDays } from "../timeFormat";
 
 interface Props {
   trackId: number;
@@ -37,10 +38,6 @@ function stayIndices(stays: Stay[]) {
 
 const known = (ms: number) => (Number.isNaN(ms) ? null : ms);
 
-function clock(ms: number) {
-  if (Number.isNaN(ms)) return "—";
-  return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-}
 
 /**
  * Finds stays (the logger lay still and its fixes scattered in a star around one spot)
@@ -48,6 +45,15 @@ function clock(ms: number) {
  */
 export function CleanupPanel(p: Props) {
   const { trackId, table, onSelectionChange, onError } = p;
+  const multiDay = table != null && spansDays(table.time);
+  const clock = (ms: number) =>
+    Number.isNaN(ms)
+      ? "—"
+      : new Date(ms).toLocaleString(undefined, {
+          ...(multiDay ? { day: "2-digit", month: "2-digit" } : {}),
+          hour: "2-digit",
+          minute: "2-digit",
+        });
   const [settings, setSettings] = useState(loadSettings);
   // The stays and the settings they were found with; only a shown preview can be applied.
   const [preview, setPreview] = useState<{ radiusM: number; minDurationS: number; stays: Stay[] } | null>(null);

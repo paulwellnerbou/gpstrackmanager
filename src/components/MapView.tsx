@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { usePresence } from "../presence";
 import { Map as MapLibreMap, setWorkerUrl, type StyleSpecification, type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -11,6 +11,7 @@ import { clickSelection, isToggleKey, type PointSelection } from "../pointEditin
 import { hoverCursor } from "../hoverCursor";
 import { GeoSearch } from "./GeoSearch";
 import { TRACK_COLORS, type MapOptions, type TrackColor } from "./MapMenu";
+import { UNCOLORED, colorScale, coloredLines, legendGradient, lineColor, scaleLabels } from "./trackColoring";
 import { installBoxSelect, pointAt, pointsInRect, updateDots, type PointView } from "./mapPoints";
 
 // MapLibre locates its worker relative to its own module URL, which Vite's dependency
@@ -88,8 +89,8 @@ interface Props {
   locked: boolean;
 }
 
-function multiLine(lines: Line[], id?: number): Feature {
-  return { type: "Feature", id, properties: {}, geometry: { type: "MultiLineString", coordinates: lines } };
+function multiLine(lines: Line[], id?: number, properties: Record<string, unknown> = {}): Feature {
+  return { type: "Feature", id, properties, geometry: { type: "MultiLineString", coordinates: lines } };
 }
 
 function addOwnLayers(map: MapLibreMap, paint: ReturnType<typeof trackPaint>) {
@@ -208,8 +209,20 @@ export function MapView({
   const dotsHint = usePresence(tooManyDots);
   const baseMapHint = usePresence(baseMapFailed);
   // Map event handlers are registered once; they read the current props through these.
-  const live = useRef({ table, selection, pointView, onPointSelection, onPointMenu, locked });
-  live.current = { table, selection, pointView, onPointSelection, onPointMenu, locked };
+  const { colorBy } = markerOptions;
+  const scale = useMemo(() => (table && colorBy !== "none" ? colorScale(table, colorBy) : null), [table, colorBy]);
+  // After an edit the old table stays up until the new one arrives; its indices no longer
+  // match the track, so the line is drawn plain until then.
+  const tableSeen = useRef({ table, version });
+  if (tableSeen.current.table !== table) tableSeen.current = { table, version };
+  const tableFresh = table != null && tableSeen.current.version === version;
+  const coloring = scale && tableFresh ? { table: table!, scale } : null;
+  // Drawn in the neutral colour rather than the plain one, so the line never flashes the
+  // selection colour while values load, and a track without them says so.
+  const uncolored = colorBy !== "none" && !coloring;
+  const current = { table, selection, pointView, onPointSelection, onPointMenu, locked, coloring, colorBy, uncolored };
+  const live = useRef(current);
+  live.current = current;
   const refreshDots = useRef(() => {
     const map = mapRef.current;
     if (map) setTooManyDots(updateDots(map, live.current.table, live.current.pointView));
@@ -232,8 +245,18 @@ export function MapView({
       b.getEast() + padX,
       b.getNorth() + padY,
     ];
+    const c = live.current.coloring;
+    if (c) {
+      const idx = await api.trackPointIndices(t.id, map.getZoom(), bbox);
+      if (seq === requestSeq.current) {
+        setData(map, "detail", { type: "FeatureCollection", features: coloredLines(idx, c.table, c.scale) });
+      }
+      return;
+    }
     const lines = await api.trackPoints(t.id, map.getZoom(), bbox);
-    if (seq === requestSeq.current) setData(map, "detail", multiLine(lines));
+    if (seq === requestSeq.current) {
+      setData(map, "detail", multiLine(lines, undefined, live.current.uncolored ? UNCOLORED : {}));
+    }
   });
 
   useEffect(() => {
@@ -379,12 +402,12 @@ export function MapView({
       map.setPaintProperty("overview", "line-color", paint.overview);
       map.setPaintProperty("overview", "line-opacity", paint.overviewOpacity);
       map.setPaintProperty("overview", "line-width", paint.overviewWidth);
-      map.setPaintProperty("detail", "line-color", paint.detail);
+      map.setPaintProperty("detail", "line-color", lineColor(paint.detail, brightness));
       map.setPaintProperty("detail-casing", "line-color", paint.casing);
       map.setPaintProperty("dots", "circle-color", paint.detail);
       map.setPaintProperty("cursor", "circle-color", paint.detail);
     });
-  }, [paint.overview, paint.overviewOpacity, paint.overviewWidth, paint.detail, paint.casing, ready]);
+  }, [paint.overview, paint.overviewOpacity, paint.overviewWidth, paint.detail, paint.casing, brightness, ready]);
 
   useEffect(() => {
     selectedRef.current = selected;
@@ -393,7 +416,9 @@ export function MapView({
     const b = selected?.bbox;
     // Show the coarse overview geometry at once; the detailed fetch replaces it.
     const coarse = selected && overview.get(selected.id);
-    if (coarse && map.getSource("detail")) setData(map, "detail", multiLine(coarse));
+    if (coarse && map.getSource("detail")) {
+      setData(map, "detail", multiLine(coarse, undefined, live.current.colorBy !== "none" ? UNCOLORED : {}));
+    }
     refreshDetail.current();
     if (!b) return;
     // Selecting can slide the details pane open and shrink the map; a resize mid-animation
@@ -429,6 +454,15 @@ export function MapView({
   useEffect(() => {
     refreshDetail.current();
   }, [version]);
+
+  const coloringScale = coloring?.scale ?? null;
+  useEffect(() => {
+    if (ready) refreshDetail.current();
+  }, [coloringScale, uncolored, ready]);
+  // Hidden while values load; a loaded track without values gets a note instead of a ramp.
+  const legend = usePresence(
+    selected && pointView !== "points" && colorBy !== "none" && tableFresh ? (coloringScale ?? colorBy) : null,
+  );
 
   useEffect(() => {
     const map = mapRef.current;
@@ -506,6 +540,23 @@ export function MapView({
     >
       <div ref={container} className="map" />
       <GeoSearch map={ready ? mapRef.current : null} />
+      {legend.shown && (
+        <div className={`color-legend${legend.closing ? " closing" : ""}`}>
+          {typeof legend.shown === "string" ? (
+            <span>No {legend.shown} data in this track</span>
+          ) : (
+            <>
+              <span className="color-legend-title">{legend.shown.by === "speed" ? "Speed" : "Altitude"}</span>
+              <span className="color-legend-ramp" style={{ background: legendGradient(brightness) }} />
+              <span className="color-legend-range">
+                {scaleLabels(legend.shown).map((l) => (
+                  <span key={l}>{l}</span>
+                ))}
+              </span>
+            </>
+          )}
+        </div>
+      )}
       {baseMapHint.shown && (
         <div className={`map-hint map-hint-bottom${baseMapHint.closing ? " closing" : ""}`}>
           Base map unavailable (offline?)

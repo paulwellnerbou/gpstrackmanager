@@ -17,9 +17,24 @@ fn segments(data: &TrackData) -> Vec<(usize, usize)> {
 /// Points for display as flat `[lon, lat, …]` with NaN pairs as line breaks.
 /// `tolerance` is in normalised mercator units (see `geo::pixel_size_at_zoom`);
 /// `bbox` (`[min_lon, min_lat, max_lon, max_lat]`) drops lines that cannot touch the view.
+pub fn select_points(data: &TrackData, tolerance: f32, bbox: Option<[f64; 4]>) -> Vec<f64> {
+    let mut out = Vec::new();
+    for i in select_indices(data, tolerance, bbox) {
+        match i {
+            Some(i) => {
+                let (lat, lon) = data.coords[i];
+                out.extend_from_slice(&[lon, lat]);
+            }
+            None => out.extend_from_slice(&[f64::NAN, f64::NAN]),
+        }
+    }
+    out
+}
+
+/// The points `select_points` would show, as indices into the track, `None` between lines.
 /// A line is kept when its own bounding box overlaps the view, so a long straight stretch
 /// crossing the screen survives even with both ends far outside.
-pub fn select_points(data: &TrackData, tolerance: f32, bbox: Option<[f64; 4]>) -> Vec<f64> {
+pub fn select_indices(data: &TrackData, tolerance: f32, bbox: Option<[f64; 4]>) -> Vec<Option<usize>> {
     let overlaps = |a: usize, b: usize| match bbox {
         None => true,
         Some([x0, y0, x1, y1]) => {
@@ -42,11 +57,9 @@ pub fn select_points(data: &TrackData, tolerance: f32, bbox: Option<[f64; 4]>) -
             }
             let contiguous = last_emitted.is_some_and(|l| l + 1 == j);
             if !contiguous && !out.is_empty() {
-                out.extend_from_slice(&[f64::NAN, f64::NAN]);
+                out.push(None);
             }
-            let (lat, lon) = data.coords[i];
-            out.push(lon);
-            out.push(lat);
+            out.push(Some(i));
             last_emitted = Some(j);
         }
     }
@@ -128,5 +141,18 @@ mod tests {
         let pts = select_points(&data, 0.0, Some([7.9, 49.9, 8.1, 50.1]));
         assert_eq!(pts.len(), 4, "both ends are kept so the line is drawn");
         assert!(select_points(&data, 0.0, Some([7.9, 51.0, 8.1, 51.2])).is_empty());
+    }
+
+    #[test]
+    fn indices_break_between_segments() {
+        let data = TrackData {
+            coords: vec![(50.0, 8.0), (50.0, 8.1), (50.1, 8.1), (50.1, 8.2)],
+            ele: vec![f32::NAN; 4],
+            time: vec![crate::model::NO_TIME; 4],
+            importance: vec![f32::INFINITY; 4],
+            seg_starts: vec![0, 2],
+            file_seg_starts: vec![0, 2],
+        };
+        assert_eq!(select_indices(&data, 0.0, None), vec![Some(0), Some(1), None, Some(2), Some(3)]);
     }
 }

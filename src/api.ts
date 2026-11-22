@@ -249,6 +249,11 @@ export const api = {
     return toLines(f64(await invoke<ArrayBuffer>("get_track_points", { id, zoom, bbox: bbox ?? null })));
   },
 
+  /** Indices of the points `trackPoints` would show, NaN between lines. */
+  async trackPointIndices(id: number, zoom: number, bbox: [number, number, number, number]): Promise<Float64Array> {
+    return f64(await invoke<ArrayBuffer>("get_track_point_indices", { id, zoom, bbox }));
+  },
+
   /** Columns: distance (m), elevation (m), time (ms or NaN), lon, lat. */
   async trackProfile(id: number, buckets: number) {
     const v = f64(await invoke<ArrayBuffer>("get_track_profile", { id, buckets }));
