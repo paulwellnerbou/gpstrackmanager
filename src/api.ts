@@ -185,11 +185,12 @@ export const api = {
     invoke<{ copied: string[]; skipped: number; failed: string[] }>("import_device_files", { rootId, files }),
 
   deleteTrackPoints: (id: number, indices: number[]) => invoke<void>("delete_track_points", { id, indices }),
-  findTrackStays: (id: number, radiusM: number, minDurationS: number) =>
-    invoke<Stay[]>("find_track_stays", { id, radiusM, minDurationS }),
-  /** Returns the number of points removed. */
-  cleanUpTrack: (id: number, radiusM: number, minDurationS: number) =>
-    invoke<number>("clean_up_track", { id, radiusM, minDurationS }),
+  /** With `dropZero`, stays are found without the fixes at a 0 coordinate, as `cleanUpTrack` does. */
+  findTrackStays: (id: number, radiusM: number, minDurationS: number, dropZero: boolean) =>
+    invoke<Stay[]>("find_track_stays", { id, radiusM, minDurationS, dropZero }),
+  /** Collapses stays unless `radiusM` is null; `dropZero` removes fixes at a 0 coordinate. Returns the number of points removed. */
+  cleanUpTrack: (id: number, radiusM: number | null, minDurationS: number, dropZero: boolean) =>
+    invoke<number>("clean_up_track", { id, radiusM, minDurationS, dropZero }),
   splitTrack: (id: number, at: number) => invoke<number>("split_track", { id, at }),
   revertFile: (fileId: number) => invoke<void>("revert_file", { fileId }),
   lastEdit: (fileId: number) => invoke<LastEdit | null>("last_edit", { fileId }),

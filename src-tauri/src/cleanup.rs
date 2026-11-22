@@ -58,6 +58,38 @@ pub fn find_stays(coords: &[(f64, f64)], ele: &[f32], time: &[i64], seg_starts: 
     out
 }
 
+/// Loggers write 0 for a coordinate they have no fix for. Exact zero only: a real fix
+/// near the equator or the prime meridian lands on 0 only at the storage precision (~1 cm).
+pub fn is_zero_fix((lat, lon): (f64, f64)) -> bool {
+    lat == 0.0 || lon == 0.0
+}
+
+/// `find_stays` over the points not in `skip`, which would otherwise break stays up as
+/// excursions. Indices refer to all points; skipped points inside a stay fall within it.
+pub fn find_stays_skipping(
+    coords: &[(f64, f64)],
+    ele: &[f32],
+    time: &[i64],
+    seg_starts: &[u32],
+    skip: &[bool],
+    o: StayOptions,
+) -> Vec<Stay> {
+    if !skip.contains(&true) {
+        return find_stays(coords, ele, time, seg_starts, o);
+    }
+    let kept: Vec<usize> = (0..coords.len()).filter(|&i| !skip[i]).collect();
+    let c: Vec<_> = kept.iter().map(|&i| coords[i]).collect();
+    let e: Vec<_> = kept.iter().map(|&i| ele[i]).collect();
+    let t: Vec<_> = kept.iter().map(|&i| time[i]).collect();
+    let seg: Vec<u32> = seg_starts.iter().map(|&s| kept.partition_point(|&i| i < s as usize) as u32).collect();
+    let mut stays = find_stays(&c, &e, &t, &seg, o);
+    for s in &mut stays {
+        s.start = kept[s.start as usize] as u32;
+        s.end = kept[s.end as usize] as u32;
+    }
+    stays
+}
+
 /// The stay starting at `start`, if one does: follows the fixes while they stay within
 /// the radius of the running centre, tolerating short spikes outside. Otherwise returns
 /// where to look next.
@@ -246,6 +278,35 @@ mod tests {
         let no_time = vec![NO_TIME; t.coords.len()];
         assert_eq!(find_stays(&t.coords, &ele, &no_time, &[0], OPTS).len(), 1);
         assert!(find_stays(&t.coords[..40], &ele[..40], &no_time[..40], &[0], OPTS).is_empty());
+    }
+
+    #[test]
+    fn zero_fixes_inside_a_stay_do_not_break_it() {
+        let mut t = Track::new();
+        jitter(&mut t, 50.0, 60, 10.0);
+        let gap = t.coords.len();
+        for _ in 0..15 {
+            t.push(0.0, 8.0);
+        }
+        jitter(&mut t, 50.0, 60, 10.0);
+        let ele = vec![f32::NAN; t.coords.len()];
+        assert_eq!(t.stays(OPTS).len(), 0, "each half alone is too short");
+        let skip: Vec<bool> = t.coords.iter().map(|&c| is_zero_fix(c)).collect();
+        let stays = find_stays_skipping(&t.coords, &ele, &t.time, &[0], &skip, OPTS);
+        assert_eq!(stays.len(), 1, "{stays:?}");
+        assert!((stays[0].start as usize) < gap && stays[0].end as usize >= gap + 15);
+        assert!(!is_zero_fix(t.coords[stays[0].start as usize]) && !is_zero_fix(t.coords[stays[0].end as usize]));
+    }
+
+    #[test]
+    fn skipped_points_keep_segment_boundaries() {
+        let mut t = Track::new();
+        jitter(&mut t, 50.0, 140, 10.0);
+        t.coords[70] = (0.0, 8.0);
+        let ele = vec![f32::NAN; t.coords.len()];
+        let skip: Vec<bool> = t.coords.iter().map(|&c| is_zero_fix(c)).collect();
+        let stays = find_stays_skipping(&t.coords, &ele, &t.time, &[0, 70], &skip, OPTS);
+        assert_eq!(stays.iter().map(|s| (s.start, s.end)).collect::<Vec<_>>(), vec![(0, 69), (71, 139)]);
     }
 
     #[test]

@@ -1176,6 +1176,19 @@ button.primary {
   margin: 0;
   font-size: 12px;
 }
+.cleanup label.cleanup-option {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+}
+.cleanup-option input {
+  width: auto;
+  margin: 0;
+}
 .cleanup-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;
