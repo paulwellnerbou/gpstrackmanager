@@ -15,6 +15,8 @@ they are, and nothing in them changes unless you ask for it.
   files when you press **Sync**.
 - See every track of the list on one map (a search narrows the map down too), or turn off
   **All tracks** to see only the selected one. Click a line on the map to select its track.
+- Stays fast with big archives: thousands of tracks and millions of points show on the map at
+  once and still pan and zoom smoothly.
 - Search by place, country, title, description, tag, activity or file name. Every track knows
   where it starts and ends and which towns it passes, so "Krabi" or "Thailand" just works, even
   for tracks without a name.
