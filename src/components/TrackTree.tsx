@@ -3,6 +3,7 @@ import { Collapse, usePresence } from "../presence";
 import {
   activityOf,
   api,
+  baseName,
   displayName,
   formatDistance,
   type PointTable,
@@ -79,10 +80,6 @@ function timeOfDay(ms: number | null) {
   if (ms == null || Number.isNaN(ms)) return "—";
   const d = new Date(ms);
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
-function fileName(path: string) {
-  return path.split("/").pop() ?? path;
 }
 
 /**
@@ -348,7 +345,7 @@ export function TrackTree(p: Props) {
           <>
             <span className="tree-icon">📄</span>
             <span className="tree-title" title={track.filePath}>
-              {fileName(track.filePath)}
+              {baseName(track.filePath)}
             </span>
             <span className="muted">
               {p.fileTracks.length} {p.fileTracks.length === 1 ? "track" : "tracks"}

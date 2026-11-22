@@ -281,9 +281,17 @@ export function placeLabel(p: TrackPlace): string {
 export function displayName(t: TrackSummary): string {
   if (t.title) return t.title;
   if (t.name) return t.name;
-  const route = routeName(t);
-  if (route) return route;
-  const file = t.filePath.split("/").pop() ?? t.filePath;
+  return routeName(t) ?? fileLabel(t);
+}
+
+/** Paths come from the OS, so Windows ones use backslashes. */
+export function baseName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+/** The file name, numbered when the file holds several tracks. */
+export function fileLabel(t: TrackSummary): string {
+  const file = baseName(t.filePath);
   return t.trackCountInFile > 1 ? `${file} #${t.idx + 1}` : file;
 }
 
