@@ -64,6 +64,129 @@ pub fn is_zero_fix((lat, lon): (f64, f64)) -> bool {
     lat == 0.0 || lon == 0.0
 }
 
+/// Far enough to be no GPS error, close enough to catch fixes decoded from garbage, which
+/// land anywhere on the globe (often near 0/0).
+const SPIKE_DISTANCE_M: f64 = 100_000.0;
+const MAX_SPIKE_POINTS: usize = 10;
+/// An airliner; a spike reached faster than this is no trip.
+const MAX_TRIP_SPEED_MS: f64 = 300.0;
+/// Logged tracks step far less than this between fixes; drawn routes and sparse exports
+/// may not, and their far points are real turns. Only judged without timestamps: in
+/// misdecoded logs junk sits beside nearly every real fix, and times vouch for real trips.
+const DENSE_STEP_M: f64 = 10_000.0;
+/// Off a track's start or end, only one neighbour checks the time: garbage times decades
+/// away would otherwise make any distance reachable.
+const MAX_END_GAP_MS: i64 = 30 * 86_400_000;
+
+/// Short runs of points (not in `skip`) that lie far from the track on both sides: off the
+/// track and back, or off its start or end. A run whose timestamps are in order and make
+/// the trip reachable is kept, e.g. a few fixes logged at the far end of a flight.
+/// Runs never span segments.
+pub fn find_spikes(coords: &[(f64, f64)], time: &[i64], seg_starts: &[u32], skip: &[bool]) -> Vec<u32> {
+    let n = coords.len();
+    let dist = |a: usize, b: usize| haversine_m(coords[a].0, coords[a].1, coords[b].0, coords[b].1);
+    let far = |a: usize, run: &[usize]| run.iter().all(|&i| dist(a, i) > SPIKE_DISTANCE_M);
+    let near = |a: usize, run: &[usize]| run.iter().all(|&i| dist(a, i) <= SPIKE_DISTANCE_M);
+    let mut out = Vec::new();
+    for (si, &s) in seg_starts.iter().enumerate() {
+        let e = seg_starts.get(si + 1).map_or(n, |&e| e as usize).min(n);
+        let kept: Vec<usize> = (s as usize..e).filter(|&i| !skip[i]).collect();
+        let m = kept.len();
+        let timeless = kept.iter().all(|&i| time[i] == NO_TIME);
+        // Points taken as part of the track; the last one anchors the next run.
+        let mut track: Vec<usize> = Vec::new();
+        let mut k = 0;
+        while k < m {
+            let prev = track.last().copied();
+            let mut spike_end = None;
+            for j in k + 1..=(k + MAX_SPIKE_POINTS).min(m) {
+                let run = &kept[k..j];
+                if prev.is_some_and(|a| dist(a, run[run.len() - 1]) <= SPIKE_DISTANCE_M) {
+                    break;
+                }
+                let next = kept.get(j).copied();
+                let anchored = match (prev, next) {
+                    (Some(a), Some(b)) => {
+                        let dense = !timeless
+                            || track.iter().rev().nth(1).is_some_and(|&c| dist(a, c) <= DENSE_STEP_M)
+                            || kept.get(j + 1).is_some_and(|&c| dist(b, c) <= DENSE_STEP_M);
+                        dense && far(a, run) && far(b, run) && {
+                            let gap = dist(a, b);
+                            run.iter().all(|&i| dist(a, i) > gap && dist(b, i) > gap)
+                        }
+                    }
+                    // At the ends either side could be the odd one out: the track must go on
+                    // beside the one neighbour for longer than any spike. At the start that is
+                    // judged on all points, as garbage can form a track of its own that real
+                    // fixes are interleaved with; at the end junk is already left out of `track`.
+                    (None, Some(b)) => far(b, run) && kept.get(j..j + MAX_SPIKE_POINTS).is_some_and(|t| near(b, t)),
+                    (Some(a), None) => {
+                        far(a, run) && track.len() >= MAX_SPIKE_POINTS && near(a, &track[track.len() - MAX_SPIKE_POINTS..])
+                    }
+                    (None, None) => false,
+                };
+                if anchored && !reachable(coords, time, prev, run, next) {
+                    spike_end = Some(j);
+                    break;
+                }
+            }
+            match spike_end {
+                Some(j) => {
+                    out.extend(kept[k..j].iter().map(|&i| i as u32));
+                    k = j;
+                }
+                None => {
+                    track.push(kept[k]);
+                    k += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether the timestamps explain going from `prev` through `run` to `next`: all known,
+/// in order, and at most airliner speed. Garbage fixes carry garbage times.
+fn reachable(coords: &[(f64, f64)], time: &[i64], prev: Option<usize>, run: &[usize], next: Option<usize>) -> bool {
+    let max_gap = if prev.is_none() || next.is_none() { MAX_END_GAP_MS } else { i64::MAX };
+    let path: Vec<usize> = prev.into_iter().chain(run.iter().copied()).chain(next).collect();
+    path.windows(2).all(|w| {
+        let (a, b) = (w[0], w[1]);
+        if time[a] == NO_TIME || time[b] == NO_TIME || time[b] < time[a] || time[b] - time[a] > max_gap {
+            return false;
+        }
+        let d = haversine_m(coords[a].0, coords[a].1, coords[b].0, coords[b].1);
+        d <= MAX_TRIP_SPEED_MS * (time[b] - time[a]) as f64 / 1000.0
+    })
+}
+
+/// What a clean-up changes, found the same way for its preview and when it is applied.
+#[derive(Debug, Default, Serialize)]
+pub struct Plan {
+    pub stays: Vec<Stay>,
+    pub spikes: Vec<u32>,
+}
+
+/// Spikes are found without the zero fixes, stays without both: either inside a stay would
+/// break it up as an excursion.
+pub fn plan(
+    coords: &[(f64, f64)],
+    ele: &[f32],
+    time: &[i64],
+    seg_starts: &[u32],
+    stays: Option<StayOptions>,
+    drop_zero: bool,
+    drop_spikes: bool,
+) -> Plan {
+    let mut skip: Vec<bool> = coords.iter().map(|&c| drop_zero && is_zero_fix(c)).collect();
+    let spikes = if drop_spikes { find_spikes(coords, time, seg_starts, &skip) } else { Vec::new() };
+    for &i in &spikes {
+        skip[i as usize] = true;
+    }
+    let stays = stays.map_or_else(Vec::new, |o| find_stays_skipping(coords, ele, time, seg_starts, &skip, o));
+    Plan { stays, spikes }
+}
+
 /// `find_stays` over the points not in `skip`, which would otherwise break stays up as
 /// excursions. Indices refer to all points; skipped points inside a stay fall within it.
 pub fn find_stays_skipping(
@@ -307,6 +430,158 @@ mod tests {
         let skip: Vec<bool> = t.coords.iter().map(|&c| is_zero_fix(c)).collect();
         let stays = find_stays_skipping(&t.coords, &ele, &t.time, &[0, 70], &skip, OPTS);
         assert_eq!(stays.iter().map(|s| (s.start, s.end)).collect::<Vec<_>>(), vec![(0, 69), (71, 139)]);
+    }
+
+    /// Fixes every 10 s along a line from `lat`, with the given junk spliced in after `at`.
+    fn line_with(lat: f64, len: usize, at: usize, junk: &[((f64, f64), i64)]) -> (Vec<(f64, f64)>, Vec<i64>) {
+        let (mut c, mut t) = (vec![], vec![]);
+        for k in 0..len {
+            c.push((lat + k as f64 * 14.0 * M, 8.0));
+            t.push(k as i64 * 10_000);
+            if k == at {
+                for &(p, time) in junk {
+                    c.push(p);
+                    t.push(time);
+                }
+            }
+        }
+        (c, t)
+    }
+
+    fn spikes(c: &[(f64, f64)], t: &[i64]) -> Vec<u32> {
+        find_spikes(c, t, &[0], &vec![false; c.len()])
+    }
+
+    #[test]
+    fn garbage_fixes_off_the_track_are_spikes() {
+        // As decoded from a misread log: near 0/0, with times decades off.
+        let junk = [((0.0019, 0.008), -1_000_000_000_000), ((1.815, 13.027), 2_000_000_000_000), ((1e-9, 7.7e-7), NO_TIME)];
+        let (c, t) = line_with(46.7, 50, 20, &junk);
+        assert_eq!(spikes(&c, &t), vec![21, 22, 23]);
+    }
+
+    #[test]
+    fn a_far_fix_with_a_plausible_time_is_still_a_spike_when_too_fast() {
+        let (c, t) = line_with(46.7, 50, 20, &[((46.7, 12.0), 205_000)]);
+        assert_eq!(spikes(&c, &t), vec![21]);
+    }
+
+    #[test]
+    fn a_short_recording_at_the_far_end_of_a_trip_is_kept() {
+        // Logged for a minute in London a day later, back home the next day.
+        let mut c = vec![(50.1, 8.6), (50.1001, 8.6)];
+        let mut t = vec![0, 10_000];
+        for k in 0..6 {
+            c.push((51.5 + k as f64 * 0.0001, -0.12));
+            t.push(86_400_000 + k * 10_000);
+        }
+        c.extend([(50.1, 8.6), (50.1001, 8.6)]);
+        t.extend([2 * 86_400_000, 2 * 86_400_000 + 10_000]);
+        assert!(spikes(&c, &t).is_empty());
+        // Without times nothing vouches for the trip.
+        assert_eq!(spikes(&c, &vec![NO_TIME; c.len()]), (2..8).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn moving_on_to_a_new_region_is_no_spike() {
+        // Off one week in Thun, on again in Frankfurt; a junk fix right at the change.
+        let mut c: Vec<_> = (0..15).map(|k| (46.75 + k as f64 * 0.0001, 7.63)).collect();
+        let mut t: Vec<_> = (0..15).map(|k| k * 2_000).collect();
+        c.push((0.0007, 3.25));
+        t.push(5);
+        for k in 0..20 {
+            c.push((50.15 + k as f64 * 0.0001, 8.42));
+            t.push(7 * 86_400_000 + k * 2_000);
+        }
+        assert_eq!(spikes(&c, &t), vec![15]);
+    }
+
+    #[test]
+    fn spikes_at_the_start_and_end_of_a_track() {
+        let (mut c, mut t) = line_with(46.7, 30, 99, &[]);
+        c.insert(0, (0.001, 0.002));
+        t.insert(0, NO_TIME);
+        c.push((2.0, 3.0));
+        t.push(-5);
+        assert_eq!(spikes(&c, &t), vec![0, 31]);
+    }
+
+    #[test]
+    fn junk_with_far_off_times_at_the_ends_is_a_spike() {
+        // Garbage times on the plausible side: before the first fix, after the last.
+        let (mut c, mut t) = line_with(46.7, 30, 99, &[]);
+        c.insert(0, (0.001, 0.002));
+        t.insert(0, -1_000_000_000_000);
+        c.push((0.0007, 3.25));
+        t.push(4_000_000_000_000);
+        assert_eq!(spikes(&c, &t), vec![0, 31]);
+        // A recording a day after the track is a trip.
+        t[31] = t[30] + 86_400_000;
+        assert_eq!(spikes(&c, &t), vec![0]);
+    }
+
+    #[test]
+    fn junk_at_the_end_after_more_junk_is_a_spike() {
+        let (mut c, mut t) = line_with(46.7, 40, 99, &[]);
+        for k in [32, 35, 38] {
+            c.insert(k, (0.002 * k as f64, 0.003));
+            t.insert(k, NO_TIME);
+        }
+        c.push((0.0006, 46.37));
+        t.push(NO_TIME);
+        assert_eq!(spikes(&c, &t), vec![32, 35, 38, 43]);
+    }
+
+    #[test]
+    fn far_turns_of_a_sparse_route_are_kept() {
+        // Frankfurt, Munich, Frankfurt without times, as drawn or exported.
+        let c = [(50.1, 8.68), (48.14, 11.58), (50.1, 8.68)];
+        assert!(spikes(&c, &[NO_TIME; 3]).is_empty());
+        // There and back with a point every 200 km.
+        let c: Vec<_> = (0..12).map(|k: usize| (40.0 + 1.8 * k.min(11 - k) as f64, 8.0)).collect();
+        assert!(spikes(&c, &vec![NO_TIME; c.len()]).is_empty());
+    }
+
+    #[test]
+    fn spikes_stay_within_segments_and_skip_points() {
+        let (mut c, mut t) = line_with(46.7, 40, 19, &[((0.001, 0.002), NO_TIME)]);
+        // The junk fix opens the second segment, right after the first one ends nearby.
+        let seg = [0u32, 20];
+        let skip = vec![false; c.len()];
+        assert_eq!(find_spikes(&c, &t, &seg, &skip), vec![20]);
+        // A skipped fix is never an anchor: next to it, the junk still has the track around it.
+        c.insert(22, (0.0, 8.0));
+        t.insert(22, NO_TIME);
+        let mut skip = vec![false; c.len()];
+        skip[22] = true;
+        c.insert(23, (0.003, 0.001));
+        t.insert(23, NO_TIME);
+        skip.insert(23, false);
+        assert_eq!(find_spikes(&c, &t, &[0], &skip), vec![20, 23]);
+    }
+
+    #[test]
+    fn long_detours_are_not_spikes() {
+        let junk: Vec<_> = (0..MAX_SPIKE_POINTS + 1).map(|k| ((0.01 * k as f64, 0.01), NO_TIME)).collect();
+        let (c, t) = line_with(46.7, 50, 20, &junk);
+        assert!(spikes(&c, &t).is_empty());
+    }
+
+    #[test]
+    fn stays_are_found_without_the_spikes() {
+        let mut t = Track::new();
+        jitter(&mut t, 50.0, 60, 10.0);
+        // Garbage times: a long excursion as far as the stay can tell.
+        for k in 0..8 {
+            t.coords.push((0.001, 0.002));
+            t.time.push(2_000_000_000_000 + k);
+        }
+        jitter(&mut t, 50.0, 60, 10.0);
+        let ele = vec![f32::NAN; t.coords.len()];
+        let found = plan(&t.coords, &ele, &t.time, &[0], Some(OPTS), false, true);
+        assert_eq!(found.spikes, (60..68).collect::<Vec<_>>());
+        assert_eq!(found.stays.len(), 1, "{:?}", found.stays);
+        assert!(plan(&t.coords, &ele, &t.time, &[0], Some(OPTS), false, false).stays.is_empty());
     }
 
     #[test]
