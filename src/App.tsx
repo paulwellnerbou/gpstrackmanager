@@ -67,10 +67,8 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = usePaneWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_DEFAULT, SIDEBAR_MIN);
   const [detailsWidth, setDetailsWidth] = usePaneWidth(DETAILS_WIDTH_KEY, DETAILS_DEFAULT, DETAILS_MIN);
 
-  const reloadCatalog = useCallback(async () => {
+  const loadCatalog = useCallback(async () => {
     try {
-      // New, re-read or edited tracks first get their duplicates, so the list shows bundles.
-      await api.refreshMatches();
       const [t, o, pr, tg] = await Promise.all([
         api.listTracks(),
         api.overview(),
@@ -85,6 +83,15 @@ export default function App() {
       setError(String(e));
     }
   }, []);
+
+  const reloadCatalog = useCallback(async () => {
+    await loadCatalog();
+    // Duplicates of new, re-read or edited tracks are found afterwards, so the list never waits for them.
+    api
+      .refreshMatches()
+      .then((n) => (n > 0 ? loadCatalog() : undefined))
+      .catch((e) => setError(String(e)));
+  }, [loadCatalog]);
 
   const reloadRoots = useCallback(() => api.listRoots().then(setRoots), []);
 

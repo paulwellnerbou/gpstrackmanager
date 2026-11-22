@@ -324,6 +324,11 @@ export function fileLabel(t: TrackSummary): string {
   return t.trackCountInFile > 1 ? `${file} #${t.idx + 1}` : file;
 }
 
+/** The distinct files that hold a bundle; one file may hold several of its tracks. */
+export function bundleFiles(tracks: TrackSummary[]): string[] {
+  return [...new Set(tracks.map((t) => t.filePath))];
+}
+
 export function formatDistance(m: number): string {
   return m >= 10_000 ? `${(m / 1000).toFixed(0)} km` : m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m.toFixed(0)} m`;
 }

@@ -637,6 +637,9 @@ fn all_track_places(conn: &Connection) -> Result<HashMap<i64, Vec<TrackPlace>>> 
 }
 
 pub fn list_tracks(conn: &Connection) -> Result<Vec<TrackSummary>> {
+    // One snapshot, so a sync on another connection cannot change the data between the queries.
+    let snapshot = conn.unchecked_transaction()?;
+    let conn = &*snapshot;
     let mut places = all_track_places(conn)?;
     let mut bundles = crate::dedup::bundles(conn)?;
     let mut st = conn.prepare(

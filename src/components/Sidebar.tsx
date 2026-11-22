@@ -5,6 +5,7 @@ import {
   activityOf,
   api,
   baseName,
+  bundleFiles,
   displayName,
   fileLabel,
   routeName,
@@ -324,6 +325,8 @@ export function Sidebar(p: Props) {
           <div style={{ height: offsets[p.tracks.length], position: "relative" }}>
             {p.tracks.slice(first, last).map((t, k) => {
               const x = texts[first + k];
+              const bundle = p.bundles.get(t.id);
+              const files = bundle && bundleFiles(bundle);
               return (
                 <div
                   key={t.id}
@@ -349,16 +352,8 @@ export function Sidebar(p: Props) {
                     · {t.pointCount.toLocaleString()} pts
                     {t.missing && <span className="missing"> · missing</span>}
                     {t.edited && <span> · edited</span>}
-                    {p.bundles.has(t.id) && (
-                      <span
-                        title={`The same recording is in:\n${p.bundles
-                          .get(t.id)!
-                          .map((b) => b.filePath)
-                          .join("\n")}`}
-                      >
-                        {" "}
-                        · {p.bundles.get(t.id)!.length} files
-                      </span>
+                    {files && (
+                      <span title={`The same recording is in:\n${files.join("\n")}`}> · {files.length} files</span>
                     )}
                     {/* Last: a long list may be cut off, the flags must not. */}
                     {x.countries && ` · ${x.countries}`}

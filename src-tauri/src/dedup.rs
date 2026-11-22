@@ -329,6 +329,8 @@ pub fn bundles(conn: &Connection) -> Result<Bundles> {
             );
         }
     }
+    // A track removed by another connection between the two queries has no pick row.
+    pairs.retain(|(x, y)| pick.contains_key(x) && pick.contains_key(y));
     let mut parent: HashMap<i64, i64> = HashMap::new();
     fn root(parent: &mut HashMap<i64, i64>, x: i64) -> i64 {
         let p = *parent.get(&x).unwrap_or(&x);
@@ -602,5 +604,18 @@ mod tests {
         c.import("b.gpx", &gpx(5, 720).replace(r#"lon="8.0""#, r#"lon="8.1""#));
         refresh(&mut c.conn).unwrap();
         assert!(c.summary(a).within.is_empty());
+    }
+
+    #[test]
+    fn a_match_whose_track_is_gone_is_skipped() {
+        let mut c = Cat::new("gone");
+        let a = c.import("a.gpx", &gpx(5, 720));
+        let b = c.import("b.gpx", &gpx(5, 720));
+        refresh(&mut c.conn).unwrap();
+        // What bundles() sees when another connection deletes a track between its two queries.
+        c.conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        c.conn.execute("DELETE FROM tracks WHERE id = ?1", [b]).unwrap();
+        assert!(bundles(&c.conn).unwrap().main.is_empty());
+        assert_eq!(c.summary(a).bundle_main, None);
     }
 }

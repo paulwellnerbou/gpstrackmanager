@@ -137,7 +137,8 @@ async fn refresh_places(app: AppHandle) -> CmdResult<usize> {
 /// Finds duplicates for new, re-read or edited tracks; returns how many were checked.
 #[tauri::command]
 async fn refresh_matches(app: AppHandle) -> CmdResult<usize> {
-    blocking(app, |s| s.write(dedup::refresh)).await
+    // Its own connection, like refresh_places: the first check of a large archive takes seconds.
+    blocking(app, |s| dedup::refresh(&mut catalog::open(&s.db_path)?)).await
 }
 
 #[tauri::command]

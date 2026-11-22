@@ -3,6 +3,7 @@ import { ask, message } from "@tauri-apps/plugin-dialog";
 import {
   ACTIVITIES,
   api,
+  bundleFiles,
   displayName,
   endPlace,
   fileLabel,
@@ -207,6 +208,7 @@ export function Details({
           </dd>
         </dl>
         <Duplicates
+          key={track.id}
           track={track}
           tracksById={tracksById}
           onSelect={edit.onSelectTrack}
@@ -332,7 +334,7 @@ function Duplicates({
       {bundle.length > 0 && (
         <>
           <div>
-            The same recording is in {bundle.length} files. The list and map show the one marked “in list”; title,
+            The same recording is in {bundleFiles(bundle).length} files. The list and map show the one marked “in list”; title,
             tags and point edits apply only to the file in bold.
           </div>
           <ul>
