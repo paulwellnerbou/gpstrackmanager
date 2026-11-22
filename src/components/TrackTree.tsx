@@ -37,6 +37,21 @@ const trackKey = (trackId: number) => `track:${trackId}`;
 /** Long waypoint lists start collapsed so the points stay in view. */
 const WAYPOINTS_OPEN_MAX = 20;
 
+// "en" because German compact notation does not shorten thousands.
+const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 0 });
+
+/**
+ * km/h; a decimal only where it matters, at walking pace. Glitched fixes reach millions of
+ * km/h, which would spill out of the column unshortened.
+ */
+function formatSpeed(ms: number) {
+  if (Number.isNaN(ms)) return "—";
+  const kmh = ms * 3.6;
+  if (kmh < 9.95) return kmh.toFixed(1);
+  const whole = Math.round(kmh);
+  return whole < 10_000 ? String(whole) : compact.format(kmh);
+}
+
 interface Props {
   track: TrackSummary;
   /** All tracks of the selected track's file, the selected one included. */
@@ -295,6 +310,8 @@ export function TrackTree(p: Props) {
         <span className="num">{Number.isNaN(t.ele[i]) ? "—" : Math.round(t.ele[i])}</span>
         <span className="num">{t.lat[i].toFixed(5)}</span>
         <span className="num">{t.lon[i].toFixed(5)}</span>
+        <span className="num">{formatSpeed(t.speed[i])}</span>
+        <span className="num">{Number.isNaN(t.bearing[i]) ? "—" : `${Math.round(t.bearing[i]) % 360}°`}</span>
       </div>
     );
   };
@@ -532,6 +549,10 @@ export function TrackTree(p: Props) {
         <span className="num">Ele</span>
         <span className="num">Lat</span>
         <span className="num">Lon</span>
+        <span className="num" title="Speed in km/h, from the neighbouring points">km/h</span>
+        <span className="num" title="Heading in degrees clockwise from north, from the neighbouring points">
+          Hdg
+        </span>
       </div>
       <div
         ref={box}
