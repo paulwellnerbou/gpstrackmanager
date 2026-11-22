@@ -198,26 +198,27 @@ async fn delete_track_points(app: AppHandle, id: i64, indices: Vec<u32>) -> CmdR
     blocking(app, move |s| s.write(|c| edit::delete_points(c, id, &indices))).await
 }
 
-/// The stays `clean_up_track` collapses; with `drop_zero` they are found without the zero fixes.
+/// What `clean_up_track` with the same options changes: the stays it collapses (none
+/// unless `radius_m` is given) and the spikes it removes.
 #[tauri::command]
-async fn find_track_stays(
+async fn preview_clean_up(
     app: AppHandle,
     id: i64,
-    radius_m: f64,
+    radius_m: Option<f64>,
     min_duration_s: f64,
     drop_zero: bool,
-) -> CmdResult<Vec<cleanup::Stay>> {
+    drop_spikes: bool,
+) -> CmdResult<cleanup::Plan> {
+    let o = radius_m.map(|radius_m| cleanup::StayOptions { radius_m, min_duration_s });
     blocking(app, move |s| {
-        let data = s.track(id)?;
-        let o = cleanup::StayOptions { radius_m, min_duration_s };
-        let skip: Vec<bool> = data.coords.iter().map(|&c| drop_zero && cleanup::is_zero_fix(c)).collect();
-        Ok(cleanup::find_stays_skipping(&data.coords, &data.ele, &data.time, &data.file_seg_starts, &skip, o))
+        let d = s.track(id)?;
+        Ok(cleanup::plan(&d.coords, &d.ele, &d.time, &d.file_seg_starts, o, drop_zero, drop_spikes))
     })
     .await
 }
 
-/// Collapses stays unless `radius_m` is None; with `drop_zero`, also removes fixes at a 0
-/// coordinate. Returns the number of points removed.
+/// Collapses stays unless `radius_m` is None; with `drop_zero` and `drop_spikes`, also
+/// removes fixes at a 0 coordinate and spikes. Returns the number of points removed.
 #[tauri::command]
 async fn clean_up_track(
     app: AppHandle,
@@ -225,9 +226,10 @@ async fn clean_up_track(
     radius_m: Option<f64>,
     min_duration_s: f64,
     drop_zero: bool,
+    drop_spikes: bool,
 ) -> CmdResult<usize> {
     let o = radius_m.map(|radius_m| cleanup::StayOptions { radius_m, min_duration_s });
-    blocking(app, move |s| s.write(|c| edit::clean_up(c, id, o, drop_zero))).await
+    blocking(app, move |s| s.write(|c| edit::clean_up(c, id, o, drop_zero, drop_spikes))).await
 }
 
 #[tauri::command]
@@ -426,7 +428,7 @@ pub fn run() {
             get_track_point_table,
             release_track_cache,
             delete_track_points,
-            find_track_stays,
+            preview_clean_up,
             clean_up_track,
             split_track,
             revert_file,
