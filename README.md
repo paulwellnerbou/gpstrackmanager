@@ -33,7 +33,9 @@ cd src-tauri && cargo run --release --example scan -- /tmp/catalog.sqlite /path/
   writes the catalog version as GPX (a FIT file becomes a `.gpx`) and keeps the previous file
   as `name.bak` (`name.2.bak`, … on later writes). The new file holds only what the catalog
   holds: points the import skipped and per-point extras (speed, sensor data, extensions) stay
-  in the backup. Writing waits for device imports and is refused while a sync runs.
+  in the backup. The written file is read back and must match the catalog before it replaces
+  anything; permissions, Finder tags and other extended attributes and the creation date carry
+  over. Writing waits for device imports and is refused while a sync runs.
 - **Places**: start, end and the towns a track passes through are looked up offline against
   GeoNames places with ≥ 1000 inhabitants (`src-tauri/data/places.tsv.gz`, built by
   `examples/build_places.rs`). Place names are searchable and name tracks without a title.

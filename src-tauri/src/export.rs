@@ -5,8 +5,21 @@ use chrono::{DateTime, SecondsFormat};
 use crate::catalog::{TrackData, WaypointRow};
 use crate::model::NO_TIME;
 
+/// Also drops characters XML 1.0 forbids even as references (control characters from
+/// Latin-1 decoded files, U+FFFE/U+FFFF): strict readers reject the whole file over one.
 fn escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\t' | '\n' | '\r' => out.push(c),
+            c if c < ' ' || c == '\u{FFFE}' || c == '\u{FFFF}' => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// KML with one LineString per segment, for handing a track to Google Earth.
@@ -107,4 +120,14 @@ pub fn gpx(out: &mut impl std::io::Write, tracks: &[GpxTrack], waypoints: &[Wayp
         writeln!(out, "</trk>")?;
     }
     writeln!(out, "</gpx>")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_is_escaped_and_xml_invalid_characters_are_dropped() {
+        assert_eq!(escape("Fish & <chips>\u{1}\u{1a}\tok\u{FFFF}"), "Fish &amp; &lt;chips&gt;\tok");
+    }
 }

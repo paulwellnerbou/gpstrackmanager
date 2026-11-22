@@ -190,9 +190,10 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
             {track.missing && <strong className="missing"> missing</strong>}
           </dd>
         </dl>
-        <Collapse show={!!(track.edited || lastEdit)}>
+        <Collapse show={!!(track.edited || fileEdited || lastEdit)}>
           <div className="edited-note">
-            Points edited in the catalog; the file is unchanged.{" "}
+            {track.edited || !fileEdited ? "Points" : "Another track of this file"} edited in the catalog; the file is
+            unchanged.{" "}
             {lastEdit && (
               <>
                 <button

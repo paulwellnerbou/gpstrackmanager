@@ -347,28 +347,9 @@ pub fn write_to_file(conn: &mut Connection, file_id: i64) -> Result<WrittenFile>
     let dir = target.parent().unwrap_or(Path::new("."));
     // Hidden, so a scan running meanwhile skips it.
     let tmp = dir.join(format!(".{}.part", target.file_name().unwrap_or_default().to_string_lossy()));
-    let written = (|| -> Result<crate::process::FileImport> {
-        let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
-        crate::export::gpx(&mut out, &tracks, &waypoints)?;
-        let file = out.into_inner().map_err(|e| e.into_error())?;
-        file.set_permissions(std::fs::metadata(&source)?.permissions())?;
-        file.sync_all()?;
-        let imported = process_file(&tmp, Format::Gpx);
-        let read_back = imported.result.as_ref().map_err(|e| anyhow::anyhow!("cannot read the written file: {e}"))?;
-        let counts = |n: usize| read_back.tracks.get(n).map(|t| t.stats.point_count);
-        if read_back.tracks.len() != tracks.len() || tracks.iter().enumerate().any(|(k, t)| counts(k) != Some(t.data.coords.len()))
-        {
-            bail!("the written file does not read back as the catalog's tracks");
-        }
-        Ok(imported)
-    })();
-    let mut imported = match written {
-        Ok(i) => i,
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e.context(format!("writing {} failed; the file is unchanged", target.display())));
-        }
-    };
+    let mut part = TempFile { path: &tmp, keep: false };
+    let mut imported = write_verified(&tmp, &source, &tracks, &waypoints)
+        .map_err(|e| e.context(format!("writing {} failed; the file is unchanged", target.display())))?;
     imported.path = target.to_string_lossy().into_owned();
 
     let tx = catalog::write_tx(conn)?;
@@ -396,19 +377,119 @@ pub fn write_to_file(conn: &mut Connection, file_id: i64) -> Result<WrittenFile>
         let _ = std::fs::rename(&backup, &source);
     };
     if let Err(e) = std::fs::rename(&source, &backup) {
-        let _ = std::fs::remove_file(&tmp);
         bail!("cannot keep {path} as {}: {e}", backup.display());
     }
     if let Err(e) = std::fs::rename(&tmp, &target) {
         restore();
-        let _ = std::fs::remove_file(&tmp);
         bail!("cannot write {}: {e}", target.display());
     }
+    part.keep = true;
     if let Err(e) = tx.commit() {
         restore();
         return Err(e.into());
     }
     Ok(WrittenFile { path: imported.path, backup: backup.to_string_lossy().into_owned() })
+}
+
+/// Deleted when dropped unless kept: a write that fails at any step leaves no copy behind.
+struct TempFile<'a> {
+    path: &'a Path,
+    keep: bool,
+}
+
+impl Drop for TempFile<'_> {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(self.path);
+        }
+    }
+}
+
+/// Writes the GPX to `tmp`, carrying over what the file system keeps about `source`, and
+/// reads it back: the original is only replaced by a file that yields exactly the
+/// catalog's points and waypoints.
+fn write_verified(
+    tmp: &Path,
+    source: &Path,
+    tracks: &[crate::export::GpxTrack],
+    waypoints: &[catalog::WaypointRow],
+) -> Result<crate::process::FileImport> {
+    let mut out = std::io::BufWriter::new(std::fs::File::create(tmp)?);
+    crate::export::gpx(&mut out, tracks, waypoints)?;
+    let file = out.into_inner().map_err(|e| e.into_error())?;
+    let meta = std::fs::metadata(source)?;
+    file.set_permissions(meta.permissions())?;
+    copy_file_attributes(source, &meta, tmp, &file);
+    file.sync_all()?;
+    let imported = process_file(tmp, Format::Gpx);
+    let read_back = imported.result.as_ref().map_err(|e| anyhow::anyhow!("cannot read the written file: {e}"))?;
+    if let Some(problem) = read_back_mismatch(read_back, tracks, waypoints) {
+        bail!("the written file does not read back as the catalog holds it: {problem}");
+    }
+    Ok(imported)
+}
+
+fn read_back_mismatch(
+    file: &crate::process::ProcessedFile,
+    tracks: &[crate::export::GpxTrack],
+    waypoints: &[catalog::WaypointRow],
+) -> Option<String> {
+    use crate::codec;
+    if file.tracks.len() != tracks.len() {
+        return Some(format!("{} tracks instead of {}", file.tracks.len(), tracks.len()));
+    }
+    let same_f32 = |a: &f32, b: &f32| a == b || (a.is_nan() && b.is_nan());
+    for (k, (got, want)) in file.tracks.iter().zip(tracks).enumerate() {
+        let (b, d) = (&got.blobs, &want.data);
+        let n = d.coords.len();
+        // The writer leaves out empty segments.
+        let segs: Vec<u32> = (d.file_seg_starts.iter().enumerate())
+            .filter(|&(j, &s)| (s as usize) < d.file_seg_starts.get(j + 1).map_or(n, |&e| e as usize).min(n))
+            .map(|(_, &s)| s)
+            .collect();
+        let ele = codec::decode_f32(&b.ele);
+        let problem = if codec::decode_coords(&b.coords) != d.coords {
+            "positions"
+        } else if ele.len() != n || !ele.iter().zip(&d.ele).all(|(a, b)| same_f32(a, b)) {
+            "elevations"
+        } else if codec::decode_i64(&b.time) != d.time {
+            "times"
+        } else if codec::decode_u32(&b.file_segs) != segs {
+            "segments"
+        } else {
+            continue;
+        };
+        return Some(format!("{problem} of track {} differ", k + 1));
+    }
+    let same_waypoint = |r: &crate::model::Waypoint, w: &catalog::WaypointRow| {
+        (r.lat - w.lat).abs() < 1e-7
+            && (r.lon - w.lon).abs() < 1e-7
+            && r.ele.map(f64::from) == w.ele
+            && r.time == w.time
+    };
+    if file.waypoints.len() != waypoints.len() || !file.waypoints.iter().zip(waypoints).all(|(r, w)| same_waypoint(r, w)) {
+        return Some("waypoints differ".into());
+    }
+    None
+}
+
+/// Finder tags and comments, other extended attributes and the creation date stay with the
+/// file. Best effort: some attributes are the system's to set, and the backup keeps them all.
+fn copy_file_attributes(source: &Path, meta: &std::fs::Metadata, tmp: &Path, file: &std::fs::File) {
+    #[cfg(unix)]
+    if let Ok(names) = xattr::list(source) {
+        for name in names {
+            if let Ok(Some(value)) = xattr::get(source, &name) {
+                let _ = xattr::set(tmp, &name, &value);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if let Ok(created) = meta.created() {
+        use std::os::macos::fs::FileTimesExt;
+        let _ = file.set_times(std::fs::FileTimes::new().set_created(created));
+    }
+    let _ = (source, meta, tmp, file);
 }
 
 /// `name.bak`, or `name.2.bak`, … when earlier writes left backups: none is overwritten.
@@ -506,6 +587,9 @@ mod tests {
             <trk><name>B</name><trkseg>{b}</trkseg></trk></gpx>"#
         );
         std::fs::write(&gpx, &original).unwrap();
+        #[cfg(unix)]
+        xattr::set(&gpx, "com.example.gtm-test", b"tag").unwrap();
+        let created = std::fs::metadata(&gpx).unwrap().created().ok();
 
         let mut conn = catalog::open(&dir.join("c.sqlite")).unwrap();
         let root = catalog::add_root(&conn, dir.to_str().unwrap()).unwrap();
@@ -524,6 +608,11 @@ mod tests {
         let w = write_to_file(&mut conn, file_id).unwrap();
         assert_eq!(w.path, gpx.to_string_lossy());
         assert_eq!(std::fs::read_to_string(dir.join("t.gpx.bak")).unwrap(), original);
+        #[cfg(unix)]
+        assert_eq!(xattr::get(&gpx, "com.example.gtm-test").unwrap().as_deref(), Some(&b"tag"[..]));
+        #[cfg(target_os = "macos")]
+        assert_eq!(std::fs::metadata(&gpx).unwrap().created().ok(), created);
+        let _ = created;
 
         let tracks = catalog::list_tracks(&conn).unwrap();
         let get = |id| tracks.iter().find(|t| t.id == id).unwrap();
@@ -551,6 +640,47 @@ mod tests {
         assert_eq!(w.backup, dir.join("t.gpx.2.bak").to_string_lossy());
         assert_eq!(std::fs::read_to_string(dir.join("t.gpx.bak")).unwrap(), original);
         assert!(!dir.join(".t.gpx.part").exists());
+
+        // A write that fails after the temporary file was written leaves the file as it was
+        // and no temporary file behind.
+        for n in 3..1000 {
+            std::fs::write(dir.join(format!("t.gpx.{n}.bak")), "").unwrap();
+        }
+        let current = std::fs::read(&gpx).unwrap();
+        delete_points(&mut conn, b_id, &[0]).unwrap();
+        let e = write_to_file(&mut conn, file_id).unwrap_err();
+        assert!(format!("{e:#}").contains("too many backups"), "{e:#}");
+        assert_eq!(std::fs::read(&gpx).unwrap(), current);
+        assert!(!dir.join(".t.gpx.part").exists());
+        assert!(catalog::list_tracks(&conn).unwrap().iter().any(|t| t.edited), "the catalog keeps the edit");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_back_compares_values_not_only_counts() {
+        let dir = std::env::temp_dir().join(format!("gtm-readback-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut d = data(6, vec![0, 3]);
+        d.ele = vec![100.5, f32::NAN, 102.0, 103.25, 104.0, 105.0];
+        d.time = (0..6).map(|i| 1_700_000_000_250 + i * 1000).collect();
+        let mut tracks = vec![crate::export::GpxTrack { name: Some("T".into()), description: None, activity: None, data: d }];
+        let tmp = dir.join("t.gpx");
+        let mut out = Vec::new();
+        crate::export::gpx(&mut out, &tracks, &[]).unwrap();
+        std::fs::write(&tmp, out).unwrap();
+        let imported = process_file(&tmp, Format::Gpx);
+        let file = imported.result.as_ref().unwrap();
+        assert_eq!(read_back_mismatch(file, &tracks, &[]), None);
+
+        tracks[0].data.ele[1] = 101.0;
+        assert_eq!(read_back_mismatch(file, &tracks, &[]).as_deref(), Some("elevations of track 1 differ"));
+        tracks[0].data.ele[1] = f32::NAN;
+        tracks[0].data.time[2] += 1;
+        assert_eq!(read_back_mismatch(file, &tracks, &[]).as_deref(), Some("times of track 1 differ"));
+        tracks[0].data.time[2] -= 1;
+        tracks[0].data.file_seg_starts = vec![0];
+        assert_eq!(read_back_mismatch(file, &tracks, &[]).as_deref(), Some("segments of track 1 differ"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
