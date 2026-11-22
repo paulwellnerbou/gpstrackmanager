@@ -31,6 +31,14 @@ export interface TrackSummary {
   fileActivity: string | null;
   /** Start, places passed through, end. */
   places: TrackPlace[];
+  /** The track its bundle shows, when other files hold the same recording. */
+  bundleMain: number | null;
+  /** Other files' tracks that are the same recording, bundled or not. */
+  sameAs: number[];
+  /** Longer tracks of other files this one lies within. */
+  within: number[];
+  /** The user shows this track on its own instead of in its bundle. */
+  bundleApart: boolean;
 }
 
 /** From GeoNames (CC BY 4.0), looked up offline. */
@@ -179,6 +187,10 @@ export const api = {
   listTracks: () => invoke<TrackSummary[]>("list_tracks"),
   /** Finds places for tracks catalogued without them; resolves to the number of tracks updated. */
   refreshPlaces: () => invoke<number>("refresh_places"),
+  /** Finds duplicates of new, re-read or edited tracks; resolves to how many were checked. */
+  refreshMatches: () => invoke<number>("refresh_matches"),
+  setBundleMain: (id: number) => invoke<void>("set_bundle_main", { id }),
+  setBundleApart: (id: number, apart: boolean) => invoke<void>("set_bundle_apart", { id, apart }),
   listProblemFiles: () => invoke<FileProblem[]>("list_problem_files"),
   listTags: () => invoke<string[]>("list_tags"),
   updateTrackMeta: (id: number, title: string | null, description: string | null) =>

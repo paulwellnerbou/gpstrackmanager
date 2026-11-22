@@ -19,6 +19,8 @@ import {
 interface Props {
   roots: Root[];
   tracks: TrackSummary[];
+  /** Main track → all tracks of its bundle; the list shows only main tracks. */
+  bundles: Map<number, TrackSummary[]>;
   selectedId: number | null;
   scan: ScanProgress | null;
   problems: FileProblem[];
@@ -347,6 +349,17 @@ export function Sidebar(p: Props) {
                     · {t.pointCount.toLocaleString()} pts
                     {t.missing && <span className="missing"> · missing</span>}
                     {t.edited && <span> · edited</span>}
+                    {p.bundles.has(t.id) && (
+                      <span
+                        title={`The same recording is in:\n${p.bundles
+                          .get(t.id)!
+                          .map((b) => b.filePath)
+                          .join("\n")}`}
+                      >
+                        {" "}
+                        · {p.bundles.get(t.id)!.length} files
+                      </span>
+                    )}
                     {/* Last: a long list may be cut off, the flags must not. */}
                     {x.countries && ` · ${x.countries}`}
                   </div>

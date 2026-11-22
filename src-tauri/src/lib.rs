@@ -2,6 +2,7 @@ pub mod activity;
 pub mod catalog;
 pub mod cleanup;
 pub mod codec;
+pub mod dedup;
 pub mod device;
 pub mod edit;
 pub mod export;
@@ -131,6 +132,22 @@ async fn scan_root(app: AppHandle, id: i64) -> CmdResult<()> {
 async fn refresh_places(app: AppHandle) -> CmdResult<usize> {
     // Its own connection: the long refresh must not hold the shared one.
     blocking(app, |s| catalog::refresh_places(&mut catalog::open(&s.db_path)?)).await
+}
+
+/// Finds duplicates for new, re-read or edited tracks; returns how many were checked.
+#[tauri::command]
+async fn refresh_matches(app: AppHandle) -> CmdResult<usize> {
+    blocking(app, |s| s.write(dedup::refresh)).await
+}
+
+#[tauri::command]
+async fn set_bundle_main(app: AppHandle, id: i64) -> CmdResult<()> {
+    blocking(app, move |s| s.write(|c| dedup::set_main(c, id))).await
+}
+
+#[tauri::command]
+async fn set_bundle_apart(app: AppHandle, id: i64, apart: bool) -> CmdResult<()> {
+    blocking(app, move |s| s.write(|c| dedup::set_apart(c, id, apart))).await
 }
 
 #[tauri::command]
@@ -438,6 +455,9 @@ pub fn run() {
             scan_root,
             list_tracks,
             refresh_places,
+            refresh_matches,
+            set_bundle_main,
+            set_bundle_apart,
             list_problem_files,
             get_overview,
             get_track_points,

@@ -69,6 +69,8 @@ export default function App() {
 
   const reloadCatalog = useCallback(async () => {
     try {
+      // New, re-read or edited tracks first get their duplicates, so the list shows bundles.
+      await api.refreshMatches();
       const [t, o, pr, tg] = await Promise.all([
         api.listTracks(),
         api.overview(),
@@ -149,6 +151,28 @@ export default function App() {
   }, [tracks, query]);
 
   const selected = tracks.find((t) => t.id === selectedId) ?? null;
+
+  const byId = useMemo(() => new Map(tracks.map((t) => [t.id, t])), [tracks]);
+  /** Main track → all tracks of its bundle, the main included. */
+  const bundles = useMemo(() => {
+    const out = new Map<number, TrackSummary[]>();
+    for (const t of tracks) if (t.bundleMain != null) out.set(t.bundleMain, [...(out.get(t.bundleMain) ?? []), t]);
+    return out;
+  }, [tracks]);
+  // A bundle is listed and drawn once, as its main track; a search matching any of its
+  // files finds it.
+  const listed = useMemo(() => {
+    const seen = new Set<number>();
+    const out: TrackSummary[] = [];
+    for (const t of filtered) {
+      const main = t.bundleMain != null ? byId.get(t.bundleMain) : t;
+      if (main && !seen.has(main.id)) {
+        seen.add(main.id);
+        out.push(main);
+      }
+    }
+    return out;
+  }, [filtered, byId]);
 
   // The selected track can disappear: a reverted split-off part, or a file a rescan removed.
   useEffect(() => {
@@ -331,6 +355,8 @@ export default function App() {
     detailsElement.current = (
       <Details
         track={selected}
+        tracksById={byId}
+        onBundleChanged={reloadCatalog}
         allTags={allTags}
         onSaveMeta={async (title, description) => {
           await api.updateTrackMeta(selected.id, title, description);
@@ -382,8 +408,9 @@ export default function App() {
     >
       <Sidebar
         roots={roots}
-        tracks={filtered}
-        selectedId={selectedId}
+        tracks={listed}
+        bundles={bundles}
+        selectedId={selected?.bundleMain ?? selectedId}
         scan={scan}
         problems={problems}
         query={query}
@@ -407,7 +434,7 @@ export default function App() {
       <main>
         <div className="toolbar">
           <strong title={selected ? displayName(selected) : undefined}>
-            {selected ? displayName(selected) : `${filtered.length} tracks`}
+            {selected ? displayName(selected) : `${listed.length} tracks`}
           </strong>
           <div className="toggles">
             <MarkerMenu options={markerOptions} onChange={changeMarkerOptions} />
@@ -427,7 +454,7 @@ export default function App() {
           </div>
         )}
         <MapView
-          tracks={filtered}
+          tracks={listed}
           overview={overview}
           selected={selected}
           showBaseMap={showBaseMap}

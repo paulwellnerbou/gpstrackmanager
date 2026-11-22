@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import {
   ACTIVITIES,
   api,
   displayName,
   endPlace,
+  fileLabel,
   placeLabel,
   startPlace,
   formatDate,
@@ -21,6 +22,9 @@ import type { PointSelection } from "../pointEditing";
 
 interface Props {
   track: TrackSummary;
+  tracksById: Map<number, TrackSummary>;
+  /** A bundle's main track or membership changed. */
+  onBundleChanged: () => void;
   allTags: string[];
   onSaveMeta: (title: string, description: string) => void;
   onSetTags: (tags: string[]) => void;
@@ -48,7 +52,19 @@ interface Props {
   onUndo: () => void;
 }
 
-export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, lastEdit, lastEditTrack, onUndo, ...edit }: Props) {
+export function Details({
+  track,
+  tracksById,
+  onBundleChanged,
+  allTags,
+  onSaveMeta,
+  onSetTags,
+  onSetActivity,
+  lastEdit,
+  lastEditTrack,
+  onUndo,
+  ...edit
+}: Props) {
   const [title, setTitle] = useState(track.title ?? "");
   const [description, setDescription] = useState(track.description ?? "");
   const [tagInput, setTagInput] = useState("");
@@ -190,6 +206,15 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
             {track.missing && <strong className="missing"> missing</strong>}
           </dd>
         </dl>
+        <Duplicates
+          track={track}
+          tracksById={tracksById}
+          onSelect={edit.onSelectTrack}
+          onChange={(f) => call(async () => {
+            await f();
+            onBundleChanged();
+          })}
+        />
         <Collapse show={!!(track.edited || fileEdited || lastEdit)}>
           <div className="edited-note">
             {track.edited || !fileEdited ? "Points" : "Another track of this file"} edited in the catalog; the file is
@@ -253,6 +278,136 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
       </div>
       <TrackTree track={track} {...edit} />
     </aside>
+  );
+}
+
+/**
+ * Other files holding this recording, the longer recordings it lies within, and the
+ * shorter ones that lie within it.
+ */
+function Duplicates({
+  track,
+  tracksById,
+  onSelect,
+  onChange,
+}: {
+  track: TrackSummary;
+  tracksById: Map<number, TrackSummary>;
+  onSelect: (id: number) => void;
+  onChange: (f: () => Promise<unknown>) => void;
+}) {
+  const [allWithin, setAllWithin] = useState(false);
+  const resolve = (ids: number[]) => ids.map((id) => tracksById.get(id)).filter((t): t is TrackSummary => !!t);
+  const main = track.bundleMain;
+  const bundle =
+    main != null ? [...tracksById.values()].filter((t) => t.bundleMain === main).sort((a, b) => a.id - b.id) : [];
+  const apartFrom = track.bundleApart ? resolve(track.sameAs) : [];
+  const within = resolve(track.within);
+  // A bundled recording is named once, by the file the list shows.
+  const holds = useMemo(() => {
+    const out = new Map<number, TrackSummary>();
+    for (const t of tracksById.values()) {
+      if (!t.within.includes(track.id)) continue;
+      const shown = (t.bundleMain != null && tracksById.get(t.bundleMain)) || t;
+      out.set(shown.id, shown);
+    }
+    return [...out.values()].sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0));
+  }, [tracksById, track.id]);
+  if (!bundle.length && !apartFrom.length && !within.length && !holds.length) return null;
+
+  const file = (t: TrackSummary, current = t.id === track.id) => (
+    <button
+      className={current ? "link file-link current" : "link file-link"}
+      title={t.filePath}
+      disabled={current}
+      onClick={() => onSelect(t.id)}
+    >
+      {fileLabel(t)}
+    </button>
+  );
+  const shownHolds = allWithin ? holds : holds.slice(0, VIA_SHOWN);
+
+  return (
+    <div className="duplicates">
+      {bundle.length > 0 && (
+        <>
+          <div>
+            The same recording is in {bundle.length} files. The list and map show the one marked “in list”; title,
+            tags and point edits apply only to the file in bold.
+          </div>
+          <ul>
+            {bundle.map((t) => (
+              <li key={t.id}>
+                {file(t)}
+                {t.id === main ? (
+                  <span className="badge">in list</span>
+                ) : (
+                  <button
+                    className="link"
+                    onClick={() => onChange(() => api.setBundleMain(t.id))}
+                    title="List and draw this file's track for the bundle"
+                  >
+                    Show in list
+                  </button>
+                )}
+                <button
+                  className="link"
+                  onClick={() => onChange(() => api.setBundleApart(t.id, true))}
+                  title="Not the same recording: list this track on its own"
+                >
+                  Separate
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {apartFrom.length > 0 && (
+        <div>
+          Listed separately from the same recording in {apartFrom.map((t, k) => (
+            <span key={t.id}>
+              {k > 0 && ", "}
+              {file(t)}
+            </span>
+          ))}
+          .{" "}
+          <button className="link" onClick={() => onChange(() => api.setBundleApart(track.id, false))}>
+            Bundle again
+          </button>
+        </div>
+      )}
+      {within.length > 0 && (
+        <div>
+          Also part of the longer{" "}
+          {within.map((t, k) => (
+            <span key={t.id}>
+              {k > 0 && ", "}
+              {file(t)}
+            </span>
+          ))}
+          .
+        </div>
+      )}
+      {holds.length > 0 && (
+        <div>
+          Contains {holds.length === 1 ? "a track" : `${holds.length} tracks`} also kept in other files:{" "}
+          {shownHolds.map((t, k) => (
+            <span key={t.id}>
+              {k > 0 && ", "}
+              {file(t)}
+            </span>
+          ))}
+          {holds.length > VIA_SHOWN && (
+            <>
+              {" "}
+              <button className="link" onClick={() => setAllWithin(!allWithin)}>
+                {allWithin ? "fewer" : `+${holds.length - VIA_SHOWN} more`}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
