@@ -18,7 +18,7 @@ const VIEWS: { value: MarkerOptions["pointView"]; label: string }[] = [
 
 const ITEMS: { key: Toggle; label: string; group: "show" | "label" }[] = [
   { key: "startEnd", label: "Start / End", group: "show" },
-  { key: "distance", label: "Distance markers", group: "show" },
+  { key: "distance", label: "Markers", group: "show" },
   { key: "waypoints", label: "Waypoints and laps", group: "show" },
   { key: "showDistance", label: "Distance", group: "label" },
   { key: "showSpeed", label: "Speed", group: "label" },
@@ -84,7 +84,7 @@ export function MarkerMenu({ options, onChange }: Props) {
           </div>
           <div className="marker-group">Show for selected track</div>
           {ITEMS.filter((i) => i.group === "show").map(row)}
-          <div className="marker-group">Labels (distance markers and selected points)</div>
+          <div className="marker-group">Labels on markers and selected points</div>
           {ITEMS.filter((i) => i.group === "label").map(row)}
         </div>
       )}
