@@ -15,6 +15,8 @@ struct Wp {
     lon: f64,
     ele: Option<f32>,
     time: Option<i64>,
+    /// m/s; ezTour stores km/h.
+    speed: Option<f32>,
 }
 
 /// Holux ezTour project: `ituser.poi` from the `.itm` ZIP, an SQLite database. Every `Line`
@@ -28,7 +30,8 @@ pub fn parse(db: &[u8]) -> Result<ParsedFile> {
     let mut by_line: HashMap<i64, Vec<Wp>> = HashMap::new();
     let mut st = conn
         .prepare(
-            "SELECT w.fParentID, w.fID, w.fNextID, w.fLatitude, w.fLongitude, w.fAltitude, g.fGPSTime1, g.fGPSTime2
+            "SELECT w.fParentID, w.fID, w.fNextID, w.fLatitude, w.fLongitude, w.fAltitude, g.fGPSTime1, g.fGPSTime2,
+                    g.fGPSSpeed
              FROM WP w LEFT JOIN GPSLog g ON g.fID = w.fGPSLogID AND w.fGPSLogID != 0
              WHERE w.fParentID != 0 ORDER BY w.fID",
         )
@@ -42,6 +45,7 @@ pub fn parse(db: &[u8]) -> Result<ParsedFile> {
             lon: r.get::<_, Option<f64>>(4)?.unwrap_or(f64::NAN),
             ele: r.get::<_, Option<f64>>(5)?.map(|e| e as f32),
             time: filetime(r.get(6)?, r.get(7)?),
+            speed: r.get::<_, Option<f64>>(8)?.map(|kmh| (kmh / 3.6) as f32),
         });
     }
 
@@ -54,7 +58,7 @@ pub fn parse(db: &[u8]) -> Result<ParsedFile> {
         let mut points = Points::default();
         for w in chain(wps, r.get::<_, Option<i64>>(2)?.unwrap_or(0)) {
             if w.lat.is_finite() && w.lon.is_finite() && w.lat.abs() <= 90.0 && w.lon.abs() <= 180.0 {
-                points.push(w.lat, w.lon, w.ele, w.time);
+                points.push_recorded(w.lat, w.lon, w.ele, w.time, w.speed, None);
             }
         }
         if !points.is_empty() {

@@ -14,11 +14,12 @@ use crate::parse::Format;
 use crate::process::{ProcessedTrack, process_file, process_track};
 use crate::undo;
 
-pub const POINT_COLUMNS: usize = 8;
+pub const POINT_COLUMNS: usize = 10;
 
-/// Flat rows of `[lat, lon, ele, time_ms, segment_start, distance_m, speed_ms, bearing_deg]`.
-/// NaN marks unknown values. `segment_start` is 1 where one of the file's segments begins,
-/// 2 where the line is only broken at a glitch or recording gap, else 0.
+/// Flat rows of `[lat, lon, ele, time_ms, segment_start, distance_m, speed_ms, bearing_deg,
+/// recorded_speed_ms, recorded_course_deg]`. NaN marks unknown values. `segment_start` is 1
+/// where one of the file's segments begins, 2 where the line is only broken at a glitch or
+/// recording gap, else 0. The recorded columns are what the file holds; the others are calculated.
 /// Distance does not include gaps between segments. Speed and bearing are taken over
 /// both neighbours within the segment, which smooths single-fix jitter.
 pub fn point_table(data: &TrackData) -> Vec<f64> {
@@ -69,6 +70,8 @@ pub fn point_table(data: &TrackData) -> Vec<f64> {
             dist[i],
             speed,
             bearing,
+            data.speed[i] as f64,
+            data.course[i] as f64,
         ]);
     }
     // Catalogs written before file segments were normalised may list a start at `n`.
@@ -99,7 +102,8 @@ fn subset(data: &TrackData, keep: &[usize]) -> Points {
         let (lat, lon) = data.coords[i];
         let ele = Some(data.ele[i]).filter(|e| !e.is_nan());
         let time = Some(data.time[i]).filter(|&t| t != NO_TIME);
-        p.push(lat, lon, ele, time);
+        let recorded = |v: &[f32]| v.get(i).copied().filter(|x| !x.is_nan());
+        p.push_recorded(lat, lon, ele, time, recorded(&data.speed), recorded(&data.course));
         prev = Some(i);
     }
     p
@@ -121,12 +125,7 @@ fn write_geometry(tx: &Transaction, track_id: i64, t: &ProcessedTrack) -> Result
             bbox[0], bbox[1], bbox[2], bbox[3], s.min_ele, s.max_ele
         ],
     )?;
-    let b = &t.blobs;
-    tx.execute(
-        "INSERT OR REPLACE INTO track_data(track_id, coords, ele, time, importance, segs, overview, file_segs)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview, b.file_segs],
-    )?;
+    catalog::insert_track_data(tx, track_id, &t.blobs)?;
     catalog::write_places(tx, track_id, &t.places)?;
     Ok(())
 }
@@ -306,7 +305,7 @@ pub struct WrittenFile {
 /// history, user metadata kept.
 ///
 /// Only what the catalog holds is written: points the import skipped and data it does not
-/// read (per-point speed, sensor data, extensions) are only in the backup.
+/// read (sensor data, other extensions) are only in the backup.
 pub fn write_to_file(conn: &mut Connection, file_id: i64) -> Result<WrittenFile> {
     let (root_id, path): (i64, String) =
         conn.query_row("SELECT root_id, path FROM files WHERE id = ?1", [file_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
@@ -450,14 +449,20 @@ fn read_back_mismatch(
             .map(|(_, &s)| s)
             .collect();
         let ele = codec::decode_f32(&b.ele);
+        let same = |got: &[f32], want: &[f32]| got.len() == want.len() && got.iter().zip(want).all(|(a, b)| same_f32(a, b));
+        let recorded = |blob: &Option<Vec<u8>>| blob.as_deref().map_or_else(|| vec![f32::NAN; n], codec::decode_f32);
         let problem = if codec::decode_coords(&b.coords) != d.coords {
             "positions"
-        } else if ele.len() != n || !ele.iter().zip(&d.ele).all(|(a, b)| same_f32(a, b)) {
+        } else if !same(&ele, &d.ele) {
             "elevations"
         } else if codec::decode_i64(&b.time) != d.time {
             "times"
         } else if codec::decode_u32(&b.file_segs) != segs {
             "segments"
+        } else if !same(&recorded(&b.speed), &d.speed) {
+            "speeds"
+        } else if !same(&recorded(&b.course), &d.course) {
+            "courses"
         } else {
             continue;
         };
@@ -515,6 +520,8 @@ mod tests {
             importance: vec![0.0; n],
             file_seg_starts: seg_starts.clone(),
             seg_starts,
+            speed: vec![f32::NAN; n],
+            course: vec![f32::NAN; n],
         }
     }
 
@@ -629,6 +636,8 @@ mod tests {
         assert!(undo::last_edit(&conn, file_id).unwrap().is_none());
         let after = catalog::load_track_data(&conn, a_id).unwrap();
         assert_eq!((after.coords, after.ele, after.time), (before.coords, before.ele, before.time));
+        assert_eq!((before.speed.clone(), after.speed), (vec![1.0; 4], before.speed), "recorded speed is written");
+        assert!(std::fs::read_to_string(&gpx).unwrap().contains("<gpxtpx:speed>1</gpxtpx:speed>"));
         let wpts = catalog::list_file_waypoints(&conn, file_id).unwrap();
         assert_eq!((wpts.len(), wpts[0].name.as_deref(), wpts[0].symbol.as_deref()), (1, Some("Hut & view"), Some("Flag")));
 
@@ -873,7 +882,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let gpx = dir.join("u.gpx");
         let pts: String = (0..10)
-            .map(|i| format!(r#"<trkpt lat="50.{i:03}" lon="8.0"><time>2024-01-01T10:00:{i:02}Z</time></trkpt>"#))
+            .map(|i| {
+                format!(r#"<trkpt lat="50.{i:03}" lon="8.0"><time>2024-01-01T10:00:{i:02}Z</time><speed>{i}.5</speed></trkpt>"#)
+            })
             .collect();
         std::fs::write(&gpx, format!("<gpx><trk><name>U</name><trkseg>{pts}</trkseg></trk></gpx>")).unwrap();
 
@@ -890,9 +901,12 @@ mod tests {
         let last = undo::last_edit(&conn, file_id).unwrap().unwrap();
         assert_eq!((last.label.as_str(), last.track_id), ("Delete 2 points", id));
 
+        assert_eq!(catalog::load_track_data(&conn, id).unwrap().speed, vec![0.5, 3.5, 4.5, 5.5]);
         let r = undo::undo(&mut conn, file_id).unwrap();
         assert_eq!((r.restored, r.removed), (vec![id], None));
-        assert_eq!(catalog::load_track_data(&conn, id).unwrap().coords.len(), 6);
+        let restored = catalog::load_track_data(&conn, id).unwrap();
+        assert_eq!(restored.coords.len(), 6);
+        assert_eq!(restored.speed, vec![0.5, 1.5, 2.5, 3.5, 4.5, 5.5], "undo restores the recorded speed");
         assert_eq!(undo::last_edit(&conn, file_id).unwrap().unwrap().track_id, part);
         undo::undo(&mut conn, file_id).unwrap();
         assert_eq!(catalog::load_track_data(&conn, part).unwrap().coords.len(), 4);
@@ -908,6 +922,11 @@ mod tests {
         assert!(undo::last_edit(&conn, file_id).unwrap().is_some());
         revert_file(&mut conn, file_id).unwrap();
         assert!(undo::last_edit(&conn, file_id).unwrap().is_none());
+
+        // A recorded list that does not fit the points loads as unknown instead of breaking callers.
+        conn.execute("UPDATE track_data SET speed = x'0000803F' WHERE track_id = ?1", [id]).unwrap();
+        let d = catalog::load_track_data(&conn, id).unwrap();
+        assert!(d.speed.len() == d.coords.len() && d.speed.iter().all(|v| v.is_nan()));
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -137,6 +137,8 @@ mod tests {
             importance: vec![f32::INFINITY; 2],
             seg_starts: vec![0],
             file_seg_starts: vec![0],
+            speed: vec![f32::NAN; 2],
+            course: vec![f32::NAN; 2],
         };
         let pts = select_points(&data, 0.0, Some([7.9, 49.9, 8.1, 50.1]));
         assert_eq!(pts.len(), 4, "both ends are kept so the line is drawn");
@@ -152,6 +154,8 @@ mod tests {
             importance: vec![f32::INFINITY; 4],
             seg_starts: vec![0, 2],
             file_seg_starts: vec![0, 2],
+            speed: vec![f32::NAN; 4],
+            course: vec![f32::NAN; 4],
         };
         assert_eq!(select_indices(&data, 0.0, None), vec![Some(0), Some(1), None, Some(2), Some(3)]);
     }

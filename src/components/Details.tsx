@@ -101,7 +101,7 @@ export function Details({
           (gpxName ? `It is saved as ${gpxName}. ` : "") +
           `The current file is kept next to it as a .bak backup.\n\n` +
           "Only what the app shows is written: points the import skipped and data it does not read " +
-          "(such as per-point speed, heart rate or extensions) stay in the backup only. " +
+          "(such as heart rate or other extensions) stay in the backup only. " +
           "The undo history of this file is cleared.",
         { title: "Write to file", kind: "warning", okLabel: "Write" },
       );

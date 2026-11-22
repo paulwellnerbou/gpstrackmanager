@@ -629,6 +629,14 @@ main {
   background: var(--accent);
   color: #fff;
 }
+.point-row .calculated {
+  color: var(--muted);
+  font-style: italic;
+}
+.point-list:focus .point-row.selected .calculated {
+  color: inherit;
+  opacity: 0.75;
+}
 .point-row .num {
   text-align: right;
 }

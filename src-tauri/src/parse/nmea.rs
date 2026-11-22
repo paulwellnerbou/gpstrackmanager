@@ -10,6 +10,9 @@ struct Fix {
     lat: f64,
     lon: f64,
     ele: Option<f32>,
+    /// m/s and degrees, from RMC.
+    speed: Option<f32>,
+    course: Option<f32>,
 }
 
 const DAY_MS: i64 = 86_400_000;
@@ -36,13 +39,15 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
         }
         last_tod = Some(fix.tod);
         let time = date.map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis() + fix.tod);
-        points.push(fix.lat, fix.lon, fix.ele, time);
+        points.push_recorded(fix.lat, fix.lon, fix.ele, time, fix.speed, fix.course);
     };
     for fix in fixes(&text) {
         match pending.as_mut() {
             Some(p) if p.tod == fix.tod => {
                 p.date = p.date.or(fix.date);
                 p.ele = p.ele.or(fix.ele);
+                p.speed = p.speed.or(fix.speed);
+                p.course = p.course.or(fix.course);
             }
             _ => {
                 if let Some(p) = pending.replace(fix) {
@@ -95,6 +100,8 @@ fn fixes(text: &str) -> impl Iterator<Item = Fix> + '_ {
             lat,
             lon,
             ele: None,
+            speed: number(&s, 7).map(|knots| knots * KNOT_MS),
+            course: number(&s, 8),
         }),
         "GGA" if s.get(6).is_some_and(|q| !q.is_empty() && *q != "0") => {
             position(&s, 2).zip(time_of_day(s[1])).map(|((lat, lon), tod)| Fix {
@@ -102,11 +109,19 @@ fn fixes(text: &str) -> impl Iterator<Item = Fix> + '_ {
                 date: None,
                 lat,
                 lon,
-                ele: s.get(9).and_then(|e| e.trim().parse::<f32>().ok()).filter(|e| e.is_finite()),
+                ele: number(&s, 9),
+                speed: None,
+                course: None,
             })
         }
         _ => None,
     })
+}
+
+const KNOT_MS: f32 = 1852.0 / 3600.0;
+
+fn number(s: &[&str], i: usize) -> Option<f32> {
+    s.get(i).and_then(|e| e.trim().parse::<f32>().ok()).filter(|e| e.is_finite())
 }
 
 /// Fields of a `$..` sentence with a valid or absent checksum, without the checksum.
@@ -203,6 +218,9 @@ mod tests {
         assert!(p.lon[0] < 0.0 && p.lat[1] < 0.0);
         assert_eq!(p.time[0], 946684799000);
         assert_eq!(p.time[1], 946684801500);
+        assert!((p.speed[0] - 22.4 * 1852.0 / 3600.0).abs() < 1e-4, "RMC speed is in knots");
+        assert_eq!(p.course[0], 84.4);
+        assert!(p.speed[1].is_nan() && p.course[1].is_nan(), "GGA has neither");
     }
 
     #[test]
