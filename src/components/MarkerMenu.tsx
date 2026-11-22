@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { usePresence } from "../presence";
 import type { MarkerOptions } from "./trackMarkers";
+import { COLOR_BY } from "./trackColoring";
 
 interface Props {
   options: MarkerOptions;
   onChange: (o: MarkerOptions) => void;
 }
 
-type Toggle = Exclude<keyof MarkerOptions, "pointView">;
+type Toggle = Exclude<keyof MarkerOptions, "pointView" | "colorBy">;
 
 const VIEWS: { value: MarkerOptions["pointView"]; label: string }[] = [
   { value: "line", label: "Line" },
@@ -65,6 +66,19 @@ export function MarkerMenu({ options, onChange }: Props) {
                 onClick={() => onChange({ ...options, pointView: v.value })}
               >
                 {v.label}
+              </button>
+            ))}
+          </div>
+          <div className="marker-group">Color line by</div>
+          <div className="segmented">
+            {COLOR_BY.map((c) => (
+              <button
+                key={c.value}
+                className={options.colorBy === c.value ? "active" : undefined}
+                disabled={options.pointView === "points"}
+                onClick={() => onChange({ ...options, colorBy: c.value })}
+              >
+                {c.label}
               </button>
             ))}
           </div>

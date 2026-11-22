@@ -1,9 +1,13 @@
 import { Marker, type Map as MapLibreMap } from "maplibre-gl";
 import type { PointTable, WaypointRow } from "../api";
+import type { ColorBy } from "./trackColoring";
+import { formatClock, spansDays } from "../timeFormat";
 
 export interface MarkerOptions {
   /** How the selected track is drawn: as a line, as its points, or both. */
   pointView: "line" | "points" | "both";
+  /** Colours the selected track's line by a value along it. */
+  colorBy: ColorBy;
   startEnd: boolean;
   waypoints: boolean;
   distance: boolean;
@@ -16,6 +20,7 @@ export interface MarkerOptions {
 
 export const DEFAULT_MARKER_OPTIONS: MarkerOptions = {
   pointView: "line",
+  colorBy: "none",
   startEnd: true,
   waypoints: true,
   distance: true,
@@ -53,19 +58,12 @@ function formatKm(m: number) {
   return `${km.toLocaleString(undefined, { maximumFractionDigits: km < 10 ? 1 : 0 })} km`;
 }
 
-function pad(n: number) {
-  return String(n).padStart(2, "0");
-}
-
 function label(t: PointTable, i: number, o: MarkerOptions, distanceOverride?: number): string {
   const parts: string[] = [];
   if (o.showDistance) parts.push(formatKm(distanceOverride ?? t.dist[i]));
   if (o.showSpeed && !Number.isNaN(t.speed[i])) parts.push(`${Math.round(t.speed[i] * 3.6)} km/h`);
   if (o.showAltitude && !Number.isNaN(t.ele[i])) parts.push(`${Math.round(t.ele[i])} m`);
-  if (o.showTime && !Number.isNaN(t.time[i])) {
-    const d = new Date(t.time[i]);
-    parts.push(`${pad(d.getHours())}:${pad(d.getMinutes())}`);
-  }
+  if (o.showTime && !Number.isNaN(t.time[i])) parts.push(formatClock(t.time[i], spansDays(t.time), false));
   return parts.join(" · ");
 }
 

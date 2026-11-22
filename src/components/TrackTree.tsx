@@ -21,6 +21,7 @@ import {
   type PointSelection,
 } from "../pointEditing";
 import { MenuBox, PointMenu } from "./PointMenu";
+import { formatClock, spansDays } from "../timeFormat";
 import { CleanupPanel } from "./CleanupPanel";
 
 const ROW = 20;
@@ -71,16 +72,6 @@ const rowCount = (b: Block) => (b.kind === "wps" || b.kind === "points" ? b.end 
 
 type Menu = { x: number; y: number } & ({ target: "points" } | { target: "seg"; seg: number });
 
-function pad(n: number) {
-  return String(n).padStart(2, "0");
-}
-
-function timeOfDay(ms: number | null) {
-  if (ms == null || Number.isNaN(ms)) return "—";
-  const d = new Date(ms);
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
 function fileName(path: string) {
   return path.split("/").pop() ?? path;
 }
@@ -113,6 +104,14 @@ export function TrackTree(p: Props) {
   );
   const box = useRef<HTMLDivElement>(null);
   const n = table?.length ?? 0;
+  // A time alone is ambiguous once the track runs past midnight; the same rule as the
+  // map labels and the clean-up panel. Waypoints may lie on other days than the track.
+  const multiDay = table != null && spansDays(table.time);
+  const wpMultiDay = useMemo(
+    () => multiDay || spansDays(Float64Array.from([...waypoints.map((w) => w.time ?? NaN), track.startTime ?? NaN])),
+    [waypoints, multiDay, track.startTime],
+  );
+  const timeOfDay = (ms: number | null) => formatClock(ms, multiDay);
 
   // Reset per file only: edits reload the waypoints and must not undo what the user collapsed.
   const wpDefaultedFor = useRef<number | null>(null);
@@ -382,7 +381,7 @@ export function TrackTree(p: Props) {
               {w.name ?? "Waypoint"}
             </span>
             <span className="muted">
-              {w.time != null ? timeOfDay(w.time) : ""}
+              {w.time != null ? formatClock(w.time, wpMultiDay) : ""}
               {w.ele != null ? ` · ${Math.round(w.ele)} m` : ""}
             </span>
           </>,
@@ -499,7 +498,7 @@ export function TrackTree(p: Props) {
   const menuSeg = shownMenu?.target === "seg" ? menuView.shown!.segments[shownMenu.seg] : null;
 
   return (
-    <div className="points">
+    <div className={multiDay ? "points multi-day" : "points"}>
       <div className="points-header">
         <span>Contents</span>
         <span className="muted">

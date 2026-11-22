@@ -25,6 +25,7 @@ import {
 } from "./api";
 import { DEFAULT_MARKER_OPTIONS, type MarkerOptions } from "./components/trackMarkers";
 import { MarkerMenu } from "./components/MarkerMenu";
+import { COLOR_BY } from "./components/trackColoring";
 import { DEFAULT_MAP_OPTIONS, MAP_THEMES, MapMenu, TRACK_COLORS, type MapOptions } from "./components/MapMenu";
 import { PointMenu } from "./components/PointMenu";
 import { EMPTY_SELECTION, sortedIndices, type PointSelection } from "./pointEditing";
@@ -532,7 +533,11 @@ function loadMapOptions(): MapOptions {
 function loadMarkerOptions(): MarkerOptions {
   try {
     const raw = localStorage.getItem(MARKER_OPTIONS_KEY);
-    if (raw) return { ...DEFAULT_MARKER_OPTIONS, ...JSON.parse(raw) };
+    if (raw) {
+      const o: MarkerOptions = { ...DEFAULT_MARKER_OPTIONS, ...JSON.parse(raw) };
+      if (!COLOR_BY.some((c) => c.value === o.colorBy)) o.colorBy = DEFAULT_MARKER_OPTIONS.colorBy;
+      return o;
+    }
   } catch {
     // Fall through to defaults.
   }
@@ -542,10 +547,11 @@ function loadMarkerOptions(): MarkerOptions {
 const SIDEBAR_WIDTH_KEY = "sidebarWidth";
 const DETAILS_WIDTH_KEY = "detailsWidth";
 const SIDEBAR_DEFAULT = 300;
-const DETAILS_DEFAULT = 340;
+const DETAILS_DEFAULT = 380;
 const SIDEBAR_MIN = 200;
-// The point table's fixed columns plus a full "lat, lon" pair need about this much.
-const DETAILS_MIN = 310;
+// The point table's fixed columns, with a date in the time column, plus a full "lat, lon"
+// pair need about this much.
+const DETAILS_MIN = 350;
 const MAP_MIN = 320;
 /**
  * How long the closing details pane stays mounted: a little longer than `--pane` in

@@ -159,6 +159,20 @@ async fn get_track_points(app: AppHandle, id: i64, zoom: f64, bbox: Option<[f64;
     .await
 }
 
+/// Like `get_track_points`, but the indices of the shown points (NaN between lines), so the
+/// UI can colour the line from its point table.
+#[tauri::command]
+async fn get_track_point_indices(app: AppHandle, id: i64, zoom: f64, bbox: Option<[f64; 4]>) -> CmdResult<Response> {
+    blocking(app, move |s| {
+        let data = s.track(id)?;
+        let tol = geo::pixel_size_at_zoom(zoom) as f32 * 0.5;
+        let idx: Vec<f64> =
+            geometry::select_indices(&data, tol, bbox).into_iter().map(|i| i.map_or(f64::NAN, |i| i as f64)).collect();
+        Ok(f64_bytes(&idx))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn get_track_profile(app: AppHandle, id: i64, buckets: usize) -> CmdResult<Response> {
     blocking(app, move |s| Ok(f64_bytes(&geometry::profile(&*s.track(id)?, buckets.clamp(10, 20_000))))).await
@@ -393,6 +407,7 @@ pub fn run() {
             list_problem_files,
             get_overview,
             get_track_points,
+            get_track_point_indices,
             get_track_profile,
             get_track_point_table,
             release_track_cache,
