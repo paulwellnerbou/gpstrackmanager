@@ -67,7 +67,7 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = usePaneWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_DEFAULT, SIDEBAR_MIN);
   const [detailsWidth, setDetailsWidth] = usePaneWidth(DETAILS_WIDTH_KEY, DETAILS_DEFAULT, DETAILS_MIN);
 
-  const reloadCatalog = useCallback(async () => {
+  const loadCatalog = useCallback(async () => {
     try {
       const [t, o, pr, tg] = await Promise.all([
         api.listTracks(),
@@ -83,6 +83,15 @@ export default function App() {
       setError(String(e));
     }
   }, []);
+
+  const reloadCatalog = useCallback(async () => {
+    await loadCatalog();
+    // Duplicates of new, re-read or edited tracks are found afterwards, so the list never waits for them.
+    api
+      .refreshMatches()
+      .then((n) => (n > 0 ? loadCatalog() : undefined))
+      .catch((e) => setError(String(e)));
+  }, [loadCatalog]);
 
   const reloadRoots = useCallback(() => api.listRoots().then(setRoots), []);
 
@@ -149,6 +158,28 @@ export default function App() {
   }, [tracks, query]);
 
   const selected = tracks.find((t) => t.id === selectedId) ?? null;
+
+  const byId = useMemo(() => new Map(tracks.map((t) => [t.id, t])), [tracks]);
+  /** Main track → all tracks of its bundle, the main included. */
+  const bundles = useMemo(() => {
+    const out = new Map<number, TrackSummary[]>();
+    for (const t of tracks) if (t.bundleMain != null) out.set(t.bundleMain, [...(out.get(t.bundleMain) ?? []), t]);
+    return out;
+  }, [tracks]);
+  // A bundle is listed and drawn once, as its main track; a search matching any of its
+  // files finds it.
+  const listed = useMemo(() => {
+    const seen = new Set<number>();
+    const out: TrackSummary[] = [];
+    for (const t of filtered) {
+      const main = t.bundleMain != null ? byId.get(t.bundleMain) : t;
+      if (main && !seen.has(main.id)) {
+        seen.add(main.id);
+        out.push(main);
+      }
+    }
+    return out;
+  }, [filtered, byId]);
 
   // The selected track can disappear: a reverted split-off part, or a file a rescan removed.
   useEffect(() => {
@@ -331,6 +362,8 @@ export default function App() {
     detailsElement.current = (
       <Details
         track={selected}
+        tracksById={byId}
+        onBundleChanged={reloadCatalog}
         allTags={allTags}
         onSaveMeta={async (title, description) => {
           await api.updateTrackMeta(selected.id, title, description);
@@ -382,8 +415,9 @@ export default function App() {
     >
       <Sidebar
         roots={roots}
-        tracks={filtered}
-        selectedId={selectedId}
+        tracks={listed}
+        bundles={bundles}
+        selectedId={selected?.bundleMain ?? selectedId}
         scan={scan}
         problems={problems}
         query={query}
@@ -407,7 +441,7 @@ export default function App() {
       <main>
         <div className="toolbar">
           <strong title={selected ? displayName(selected) : undefined}>
-            {selected ? displayName(selected) : `${filtered.length} tracks`}
+            {selected ? displayName(selected) : `${listed.length} tracks`}
           </strong>
           <div className="toggles">
             <MarkerMenu options={markerOptions} onChange={changeMarkerOptions} />
@@ -427,7 +461,7 @@ export default function App() {
           </div>
         )}
         <MapView
-          tracks={filtered}
+          tracks={listed}
           overview={overview}
           selected={selected}
           showBaseMap={showBaseMap}

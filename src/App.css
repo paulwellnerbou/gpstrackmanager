@@ -493,6 +493,46 @@ main {
 .open-in button {
   flex: 1;
 }
+.duplicates {
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.duplicates ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.duplicates li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.duplicates .file-link {
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.duplicates li .file-link {
+  flex: 0 1 auto;
+}
+.duplicates .file-link.current {
+  text-decoration: none;
+  font-weight: 600;
+  opacity: 1;
+}
+.duplicates li > :not(.file-link) {
+  flex: none;
+  white-space: nowrap;
+}
+.duplicates .badge {
+  font-size: 11px;
+}
 .edited-note {
   font-size: 12px;
   color: var(--muted);

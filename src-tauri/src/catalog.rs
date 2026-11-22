@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS tracks(
   min_ele REAL, max_ele REAL,
   edited INTEGER NOT NULL DEFAULT 0, -- points edited in the app; rescans leave the track alone
   places_version INTEGER NOT NULL DEFAULT 0, -- places::PLACES_VERSION the places were found with
+  match_version INTEGER NOT NULL DEFAULT 0,  -- dedup::MATCH_VERSION the matches were found with
+  bundle_main INTEGER NOT NULL DEFAULT 0,    -- user: the track its bundle shows
+  bundle_apart INTEGER NOT NULL DEFAULT 0,   -- user: shown on its own, not in its bundle
   UNIQUE(file_id, idx)
 );
 CREATE INDEX IF NOT EXISTS tracks_start ON tracks(start_time);
@@ -61,6 +64,13 @@ CREATE TABLE IF NOT EXISTS track_data(
   overview BLOB NOT NULL,
   file_segs BLOB                 -- segment starts without glitch splits; NULL in old catalogs
 );
+CREATE TABLE IF NOT EXISTS track_matches( -- tracks of different files that are one recording
+  track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+  other_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,            -- same (track_id < other_id) | within (track_id lies within other_id)
+  PRIMARY KEY(track_id, other_id)
+);
+CREATE INDEX IF NOT EXISTS track_matches_other ON track_matches(other_id);
 CREATE TABLE IF NOT EXISTS track_places(
   track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
   seq INTEGER NOT NULL,
@@ -128,6 +138,13 @@ END;
 CREATE TRIGGER IF NOT EXISTS track_data_update_places AFTER UPDATE ON track_data BEGIN
   UPDATE tracks SET places_version = 0 WHERE id = NEW.track_id;
 END;
+-- Likewise for the matches with other files' tracks; dedup::refresh finds them again.
+CREATE TRIGGER IF NOT EXISTS track_data_insert_matches AFTER INSERT ON track_data BEGIN
+  UPDATE tracks SET match_version = 0 WHERE id = NEW.track_id;
+END;
+CREATE TRIGGER IF NOT EXISTS track_data_update_matches AFTER UPDATE ON track_data BEGIN
+  UPDATE tracks SET match_version = 0 WHERE id = NEW.track_id;
+END;
 "#;
 
 pub fn open(path: &Path) -> Result<Connection> {
@@ -178,7 +195,12 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version < 4 {
         add_column(conn, "tracks", "places_version", "INTEGER NOT NULL DEFAULT 0")?;
     }
-    conn.pragma_update(None, "user_version", 4)?;
+    if version < 5 {
+        add_column(conn, "tracks", "match_version", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column(conn, "tracks", "bundle_main", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column(conn, "tracks", "bundle_apart", "INTEGER NOT NULL DEFAULT 0")?;
+    }
+    conn.pragma_update(None, "user_version", 5)?;
     Ok(())
 }
 
@@ -595,6 +617,14 @@ pub struct TrackSummary {
     pub file_activity: Option<String>,
     /// Start, places passed through, end.
     pub places: Vec<TrackPlace>,
+    /// The track its bundle shows, when other files hold the same recording.
+    pub bundle_main: Option<i64>,
+    /// Other files' tracks that are the same recording, bundled or not.
+    pub same_as: Vec<i64>,
+    /// Longer tracks of other files this one lies within.
+    pub within: Vec<i64>,
+    /// The user shows this track on its own instead of in its bundle.
+    pub bundle_apart: bool,
 }
 
 fn all_track_places(conn: &Connection) -> Result<HashMap<i64, Vec<TrackPlace>>> {
@@ -611,7 +641,11 @@ fn all_track_places(conn: &Connection) -> Result<HashMap<i64, Vec<TrackPlace>>> 
 }
 
 pub fn list_tracks(conn: &Connection) -> Result<Vec<TrackSummary>> {
+    // One snapshot, so a sync on another connection cannot change the data between the queries.
+    let snapshot = conn.unchecked_transaction()?;
+    let conn = &*snapshot;
     let mut places = all_track_places(conn)?;
+    let mut bundles = crate::dedup::bundles(conn)?;
     let mut st = conn.prepare(
         "SELECT t.id, t.file_id, f.path, f.format, t.idx,
                 (SELECT COUNT(*) FROM tracks t2 WHERE t2.file_id = t.file_id),
@@ -655,6 +689,10 @@ pub fn list_tracks(conn: &Connection) -> Result<Vec<TrackSummary>> {
             activity: r.get(23)?,
             file_activity: r.get(24)?,
             places: places.remove(&id).unwrap_or_default(),
+            bundle_main: bundles.main.get(&id).copied(),
+            same_as: bundles.same.remove(&id).unwrap_or_default(),
+            within: bundles.within.remove(&id).unwrap_or_default(),
+            bundle_apart: bundles.apart.contains(&id),
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
