@@ -193,6 +193,8 @@ export const api = {
     invoke<number>("clean_up_track", { id, radiusM, minDurationS, dropZero }),
   splitTrack: (id: number, at: number) => invoke<number>("split_track", { id, at }),
   revertFile: (fileId: number) => invoke<void>("revert_file", { fileId }),
+  /** Writes the file's catalog version over it as GPX; `backup` is the previous file, renamed. */
+  writeFileEdits: (fileId: number) => invoke<{ path: string; backup: string }>("write_file_edits", { fileId }),
   lastEdit: (fileId: number) => invoke<LastEdit | null>("last_edit", { fileId }),
   /** Undoes the file's newest point edit; `removed` is a split-off part that went away. */
   undoEdit: (fileId: number) =>

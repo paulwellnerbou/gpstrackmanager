@@ -1,7 +1,7 @@
-//! Point editing. Edits change the catalog copy only; the original file stays untouched
-//! and `revert_file` restores it.
+//! Point editing. Edits change the catalog copy; `revert_file` discards them, and only
+//! `write_to_file`, on the user's request, writes them into the file.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use rusqlite::{Connection, Transaction, params};
@@ -290,6 +290,136 @@ pub fn revert_file(conn: &mut Connection, file_id: i64) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WrittenFile {
+    pub path: String,
+    /// The file as it was before, renamed next to it.
+    pub backup: String,
+}
+
+/// Writes the catalog version of a file (all its tracks, split-off parts as tracks of their
+/// own, and its waypoints) as GPX over the original, which is kept as a `.bak` the scanner
+/// ignores. A FIT file becomes a GPX file of the same name. Afterwards the file's tracks
+/// are plain tracks of the new file: not edited, no undo history, user metadata kept.
+///
+/// Only what the catalog holds is written: points the import skipped and data it does not
+/// read (per-point speed, sensor data, extensions) are only in the backup.
+pub fn write_to_file(conn: &mut Connection, file_id: i64) -> Result<WrittenFile> {
+    let (root_id, path): (i64, String) =
+        conn.query_row("SELECT root_id, path FROM files WHERE id = ?1", [file_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let source = PathBuf::from(&path);
+    let Some(format) = Format::from_path(&source) else { bail!("unsupported file: {path}") };
+    if !source.is_file() {
+        bail!("{path} is missing.");
+    }
+    let target = if format == Format::Gpx { source.clone() } else { source.with_extension("gpx") };
+    if target != source && target.exists() {
+        bail!("{} already exists.", target.display());
+    }
+
+    // File order, then split-off parts oldest first, as the track list shows them.
+    // (id, edited, [name, description, activity]) as the user sees them.
+    let rows: Vec<(i64, bool, [Option<String>; 3])> = {
+        let mut st = conn.prepare(
+            "SELECT id, edited, COALESCE(title, name), COALESCE(description, file_description),
+                    COALESCE(activity, file_activity)
+             FROM tracks WHERE file_id = ?1 ORDER BY idx < 0, abs(idx)",
+        )?;
+        st.query_map([file_id], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0, [r.get(2)?, r.get(3)?, r.get(4)?])))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    if !rows.iter().any(|r| r.1) {
+        bail!("Nothing in this file is edited.");
+    }
+    let mut tracks = Vec::with_capacity(rows.len());
+    for (id, _, [name, description, activity]) in &rows {
+        let data = catalog::load_track_data(conn, *id)?;
+        tracks.push(crate::export::GpxTrack {
+            name: name.clone(),
+            description: description.clone(),
+            activity: activity.clone(),
+            data,
+        });
+    }
+    let waypoints = catalog::list_file_waypoints(conn, file_id)?;
+
+    let dir = target.parent().unwrap_or(Path::new("."));
+    // Hidden, so a scan running meanwhile skips it.
+    let tmp = dir.join(format!(".{}.part", target.file_name().unwrap_or_default().to_string_lossy()));
+    let written = (|| -> Result<crate::process::FileImport> {
+        let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        crate::export::gpx(&mut out, &tracks, &waypoints)?;
+        let file = out.into_inner().map_err(|e| e.into_error())?;
+        file.set_permissions(std::fs::metadata(&source)?.permissions())?;
+        file.sync_all()?;
+        let imported = process_file(&tmp, Format::Gpx);
+        let read_back = imported.result.as_ref().map_err(|e| anyhow::anyhow!("cannot read the written file: {e}"))?;
+        let counts = |n: usize| read_back.tracks.get(n).map(|t| t.stats.point_count);
+        if read_back.tracks.len() != tracks.len() || tracks.iter().enumerate().any(|(k, t)| counts(k) != Some(t.data.coords.len()))
+        {
+            bail!("the written file does not read back as the catalog's tracks");
+        }
+        Ok(imported)
+    })();
+    let mut imported = match written {
+        Ok(i) => i,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.context(format!("writing {} failed; the file is unchanged", target.display())));
+        }
+    };
+    imported.path = target.to_string_lossy().into_owned();
+
+    let tx = catalog::write_tx(conn)?;
+    // The device may still hold the replaced contents; the import must keep seeing them as imported.
+    tx.execute(
+        "INSERT OR IGNORE INTO written_hashes(hash, file_id) SELECT hash, id FROM files WHERE id = ?1 AND hash != ''",
+        [file_id],
+    )?;
+    if target != source {
+        tx.execute("UPDATE files SET path = ?2, format = 'gpx' WHERE id = ?1", params![file_id, imported.path])?;
+    }
+    // Every track takes its position in the new file, so the import matches it to its own
+    // row (keeping title, tags, activity) and replaces the geometry with what was written.
+    tx.execute("UPDATE tracks SET idx = idx - (1 << 42) WHERE file_id = ?1", [file_id])?;
+    for (k, (id, _, [name, ..])) in rows.iter().enumerate() {
+        tx.execute("UPDATE tracks SET idx = ?2, name = ?3, edited = 0 WHERE id = ?1", params![id, k as i64, name])?;
+    }
+    catalog::write_import_in(&tx, root_id, &imported)?;
+
+    let backup = free_backup_path(&source)?;
+    let restore = || {
+        if target != source {
+            let _ = std::fs::remove_file(&target);
+        }
+        let _ = std::fs::rename(&backup, &source);
+    };
+    if let Err(e) = std::fs::rename(&source, &backup) {
+        let _ = std::fs::remove_file(&tmp);
+        bail!("cannot keep {path} as {}: {e}", backup.display());
+    }
+    if let Err(e) = std::fs::rename(&tmp, &target) {
+        restore();
+        let _ = std::fs::remove_file(&tmp);
+        bail!("cannot write {}: {e}", target.display());
+    }
+    if let Err(e) = tx.commit() {
+        restore();
+        return Err(e.into());
+    }
+    Ok(WrittenFile { path: imported.path, backup: backup.to_string_lossy().into_owned() })
+}
+
+/// `name.bak`, or `name.2.bak`, … when earlier writes left backups: none is overwritten.
+fn free_backup_path(source: &Path) -> Result<PathBuf> {
+    let name = source.file_name().unwrap_or_default().to_string_lossy();
+    (1..1000)
+        .map(|n| source.with_file_name(if n == 1 { format!("{name}.bak") } else { format!("{name}.{n}.bak") }))
+        .find(|p| !p.exists())
+        .ok_or_else(|| anyhow::anyhow!("too many backups of {}", source.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +481,76 @@ mod tests {
         assert_eq!(tracks.len(), 1);
         assert_eq!((tracks[0].id, tracks[0].point_count, tracks[0].edited), (id, 10, false));
         assert_eq!(tracks[0].tags, vec!["walk".to_string()]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn writing_edits_to_the_file_keeps_a_backup_and_the_catalog_metadata() {
+        let dir = std::env::temp_dir().join(format!("gtm-write-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gpx = dir.join("t.gpx");
+        let a: String = (0..10)
+            .map(|i| {
+                format!(
+                    r#"<trkpt lat="50.{i:03}1234" lon="8.0"><ele>1{i}2.5</ele><time>2024-01-01T10:00:0{i}.250Z</time><speed>1</speed></trkpt>"#
+                )
+            })
+            .collect();
+        let b: String = (0..5)
+            .map(|i| format!(r#"<trkpt lat="51.{i:03}" lon="9.0"><time>2024-01-02T10:00:0{i}Z</time></trkpt>"#))
+            .collect();
+        let original = format!(
+            r#"<gpx><wpt lat="50.5" lon="8.5"><name>Hut &amp; view</name><sym>Flag</sym></wpt>
+            <trk><name>A</name><type>hiking</type><trkseg>{a}<trkpt lat="0" lon="0"/></trkseg></trk>
+            <trk><name>B</name><trkseg>{b}</trkseg></trk></gpx>"#
+        );
+        std::fs::write(&gpx, &original).unwrap();
+
+        let mut conn = catalog::open(&dir.join("c.sqlite")).unwrap();
+        let root = catalog::add_root(&conn, dir.to_str().unwrap()).unwrap();
+        catalog::write_import(&mut conn, root.id, &process_file(&gpx, Format::Gpx)).unwrap();
+        let tracks = catalog::list_tracks(&conn).unwrap();
+        let id_of = |name: &str| tracks.iter().find(|t| t.name.as_deref() == Some(name)).unwrap().id;
+        let (a_id, b_id, file_id) = (id_of("A"), id_of("B"), tracks[0].file_id);
+        assert!(write_to_file(&mut conn, file_id).is_err(), "nothing edited yet");
+
+        catalog::set_track_tags(&mut conn, a_id, &["walk".into()]).unwrap();
+        catalog::update_track_meta(&conn, b_id, Some("Bee"), None).unwrap();
+        let part = split(&mut conn, a_id, 4).unwrap();
+        delete_points(&mut conn, part, &[0]).unwrap();
+        let before = catalog::load_track_data(&conn, a_id).unwrap();
+
+        let w = write_to_file(&mut conn, file_id).unwrap();
+        assert_eq!(w.path, gpx.to_string_lossy());
+        assert_eq!(std::fs::read_to_string(dir.join("t.gpx.bak")).unwrap(), original);
+
+        let tracks = catalog::list_tracks(&conn).unwrap();
+        let get = |id| tracks.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(tracks.len(), 3);
+        assert!(tracks.iter().all(|t| !t.edited && t.idx >= 0));
+        assert_eq!((get(a_id).idx, get(b_id).idx, get(part).idx), (0, 1, 2));
+        assert_eq!((get(a_id).point_count, get(b_id).point_count, get(part).point_count), (4, 5, 5));
+        assert_eq!(get(part).title.as_deref(), Some("A (part 2)"));
+        assert_eq!(get(part).tags, vec!["walk".to_string()]);
+        assert_eq!(get(b_id).title.as_deref(), Some("Bee"));
+        assert_eq!(get(part).file_activity.as_deref(), Some("hiking"));
+        assert!(undo::last_edit(&conn, file_id).unwrap().is_none());
+        let after = catalog::load_track_data(&conn, a_id).unwrap();
+        assert_eq!((after.coords, after.ele, after.time), (before.coords, before.ele, before.time));
+        let wpts = catalog::list_file_waypoints(&conn, file_id).unwrap();
+        assert_eq!((wpts.len(), wpts[0].name.as_deref(), wpts[0].symbol.as_deref()), (1, Some("Hut & view"), Some("Flag")));
+
+        // The written file is now what "Revert to file" goes back to.
+        revert_file(&mut conn, file_id).unwrap();
+        assert_eq!(catalog::list_tracks(&conn).unwrap().len(), 3);
+
+        // A second write never overwrites the first backup.
+        delete_points(&mut conn, b_id, &[0]).unwrap();
+        let w = write_to_file(&mut conn, file_id).unwrap();
+        assert_eq!(w.backup, dir.join("t.gpx.2.bak").to_string_lossy());
+        assert_eq!(std::fs::read_to_string(dir.join("t.gpx.bak")).unwrap(), original);
+        assert!(!dir.join(".t.gpx.part").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 

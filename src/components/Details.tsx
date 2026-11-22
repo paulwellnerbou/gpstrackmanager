@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 import {
   ACTIVITIES,
   api,
@@ -71,6 +72,34 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
   const call = (f: () => Promise<unknown>) => f().catch((e) => edit.onError(String(e)));
 
   const fallbackName = track.title ? (track.name ?? "") : displayName(track);
+
+  const fileName = track.filePath.split("/").pop() ?? track.filePath;
+  const fileEdited = edit.fileTracks.some((t) => t.edited);
+
+  const writeToFile = () =>
+    call(async () => {
+      const gpxName = track.format === "fit" ? fileName.replace(/\.fit$/i, ".gpx") : null;
+      const ok = await ask(
+        `Write the catalog version of ${fileName} into the file?\n\n` +
+          (gpxName ? `It is saved as ${gpxName}. ` : "") +
+          `The current file is kept next to it as a .bak backup.\n\n` +
+          "Only what the app shows is written: points the import skipped and data it does not read " +
+          "(such as per-point speed, heart rate or extensions) stay in the backup only. " +
+          "The undo history of this file is cleared.",
+        { title: "Write to file", kind: "warning", okLabel: "Write" },
+      );
+      if (!ok) return;
+      edit.onBeginEdit();
+      let written;
+      try {
+        written = await api.writeFileEdits(track.fileId);
+      } finally {
+        edit.onEdited();
+      }
+      await message(`Written to ${written.path}.\n\nThe previous file is kept as ${written.backup.split("/").pop()}.`, {
+        title: "Write to file",
+      });
+    });
 
   return (
     <aside className="details">
@@ -174,6 +203,19 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
                 >
                   Undo {lastEdit.label.charAt(0).toLowerCase() + lastEdit.label.slice(1)}
                   {lastEditTrack && ` in “${displayName(lastEditTrack)}”`}
+                </button>
+                {" · "}
+              </>
+            )}
+            {fileEdited && (
+              <>
+                <button
+                  className="link"
+                  disabled={edit.locked}
+                  onClick={writeToFile}
+                  title="Write the edited tracks into the file; the current file is kept as a .bak backup"
+                >
+                  Write to file…
                 </button>
                 {" · "}
               </>
