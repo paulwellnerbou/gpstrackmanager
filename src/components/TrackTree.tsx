@@ -3,6 +3,7 @@ import { Collapse, usePresence } from "../presence";
 import {
   activityOf,
   api,
+  baseName,
   displayName,
   formatDistance,
   type PointTable,
@@ -71,10 +72,6 @@ type Block =
 const rowCount = (b: Block) => (b.kind === "wps" || b.kind === "points" ? b.end - b.start : 1);
 
 type Menu = { x: number; y: number } & ({ target: "points" } | { target: "seg"; seg: number });
-
-function fileName(path: string) {
-  return path.split("/").pop() ?? path;
-}
 
 /**
  * File → tracks → segments → points, plus the file's waypoints. Levels with a single
@@ -347,7 +344,7 @@ export function TrackTree(p: Props) {
           <>
             <span className="tree-icon">📄</span>
             <span className="tree-title" title={track.filePath}>
-              {fileName(track.filePath)}
+              {baseName(track.filePath)}
             </span>
             <span className="muted">
               {p.fileTracks.length} {p.fileTracks.length === 1 ? "track" : "tracks"}

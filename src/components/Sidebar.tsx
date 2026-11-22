@@ -4,7 +4,9 @@ import { Collapse } from "../presence";
 import {
   activityOf,
   api,
+  baseName,
   displayName,
+  fileLabel,
   routeName,
   formatDistance,
   type FileProblem,
@@ -30,35 +32,44 @@ interface Props {
 }
 
 /**
- * Rows of one kind (with or without a route line and tags) share a height, so the list can
- * render only what is visible. Every line is a single line, so the height of a kind does not
- * depend on the width; these are minimums, raised once per kind if its rows need more
- * (larger text).
+ * Rows of one kind (which optional lines they have) share a height, so the list can render
+ * only what is visible. Every line is a single line, so the height of a kind does not depend
+ * on the width; these are minimums, raised once per kind if its rows need more (larger text).
  */
 const ROW_H = 50;
-const ROUTE_H = 17;
+const LINE_H = 17;
 const TAGS_H = 20;
 const OVERSCAN = 8;
 
-const ROW_KINDS = ["", "r", "t", "rt"] as const;
+const ROW_KINDS = ["", "r", "f", "rf", "t", "rt", "ft", "rft"] as const;
 type RowKind = (typeof ROW_KINDS)[number];
 
-/** The route line is shown only when it adds something to the name. */
-function routeLine(t: TrackSummary): string | null {
-  const route = routeName(t);
-  return route && route !== displayName(t) ? route : null;
+const DEFAULT_ROW_HEIGHTS = Object.fromEntries(
+  ROW_KINDS.map((k) => [
+    k,
+    ROW_H + (k.includes("r") ? LINE_H : 0) + (k.includes("f") ? LINE_H : 0) + (k.includes("t") ? TAGS_H : 0),
+  ]),
+) as Record<RowKind, number>;
+
+interface RowText {
+  name: string;
+  /** Shown only when they add something to the name. */
+  route: string | null;
+  file: string | null;
+  countries: string | null;
+  kind: RowKind;
 }
 
-function rowKind(t: TrackSummary): RowKind {
-  return `${routeLine(t) ? "r" : ""}${t.tags.length ? "t" : ""}` as RowKind;
+function rowText(t: TrackSummary): RowText {
+  const name = displayName(t);
+  const routed = routeName(t);
+  const route = routed && routed !== name ? routed : null;
+  const label = fileLabel(t);
+  const file = label !== name ? label : null;
+  const names = [...new Set(t.places.map((p) => p.country).filter((c): c is string => !!c))];
+  const kind = `${route ? "r" : ""}${file ? "f" : ""}${t.tags.length ? "t" : ""}` as RowKind;
+  return { name, route, file, countries: names.length ? names.join(", ") : null, kind };
 }
-
-const DEFAULT_ROW_HEIGHTS: Record<RowKind, number> = {
-  "": ROW_H,
-  r: ROW_H + ROUTE_H,
-  t: ROW_H + TAGS_H,
-  rt: ROW_H + ROUTE_H + TAGS_H,
-};
 
 export function Sidebar(p: Props) {
   const [devices, setDevices] = useState<GpsDevice[] | null>(null);
@@ -93,11 +104,12 @@ export function Sidebar(p: Props) {
     }
     if (next) setRowHeight(next);
   });
+  const texts = useMemo(() => p.tracks.map(rowText), [p.tracks]);
   const offsets = useMemo(() => {
-    const o = new Float64Array(p.tracks.length + 1);
-    p.tracks.forEach((t, i) => (o[i + 1] = o[i] + rowHeight[rowKind(t)]));
+    const o = new Float64Array(texts.length + 1);
+    texts.forEach((x, i) => (o[i + 1] = o[i] + rowHeight[x.kind]));
     return o;
-  }, [p.tracks, rowHeight]);
+  }, [texts, rowHeight]);
   const rowAt = (y: number) => {
     let [lo, hi] = [0, p.tracks.length];
     while (lo < hi) {
@@ -247,7 +259,7 @@ export function Sidebar(p: Props) {
           {devices?.map((d) => (
             <div key={d.volume} className="device">
               <div>
-                <b>{d.model ?? d.volume.split("/").pop()}</b> <span className="muted">{d.volume}</span>
+                <b>{d.model ?? baseName(d.volume)}</b> <span className="muted">{d.volume}</span>
               </div>
               {d.files.length === 0 && <div className="muted">No track files on the device.</div>}
               <ul>
@@ -308,43 +320,53 @@ export function Sidebar(p: Props) {
           onKeyDown={onListKey}
         >
           <div style={{ height: offsets[p.tracks.length], position: "relative" }}>
-            {p.tracks.slice(first, last).map((t, k) => (
-              <div
-                key={t.id}
-                id={`track-${t.id}`}
-                role="option"
-                aria-selected={t.id === p.selectedId}
-                className={`list-row ${t.id === p.selectedId ? "selected" : ""}`}
-                data-kind={rowKind(t)}
-                style={{ top: offsets[first + k], height: offsets[first + k + 1] - offsets[first + k] }}
-                onClick={() => p.onSelect(t.id)}
-              >
-                <div className="track-name">
-                  {activityOf(t) && (
-                    <span className="activity-icon" title={activityOf(t)!.label}>
-                      {activityOf(t)!.icon}
-                    </span>
-                  )}
-                  {displayName(t)}
-                </div>
-                {routeLine(t) && <div className="track-route">{routeLine(t)}</div>}
-                <div className="track-meta">
-                  {t.startTime ? new Date(t.startTime).toLocaleDateString() : "no date"} · {formatDistance(t.distanceM)}{" "}
-                  · {t.pointCount.toLocaleString()} pts
-                  {t.missing && <span className="missing"> · missing</span>}
-                  {t.edited && <span> · edited</span>}
-                </div>
-                {t.tags.length > 0 && (
-                  <div className="track-tags">
-                    {t.tags.map((g) => (
-                      <span key={g} className="tag small">
-                        {g}
+            {p.tracks.slice(first, last).map((t, k) => {
+              const x = texts[first + k];
+              return (
+                <div
+                  key={t.id}
+                  id={`track-${t.id}`}
+                  role="option"
+                  aria-selected={t.id === p.selectedId}
+                  className={`list-row ${t.id === p.selectedId ? "selected" : ""}`}
+                  data-kind={x.kind}
+                  style={{ top: offsets[first + k], height: offsets[first + k + 1] - offsets[first + k] }}
+                  onClick={() => p.onSelect(t.id)}
+                >
+                  <div className="track-name">
+                    {activityOf(t) && (
+                      <span className="activity-icon" title={activityOf(t)!.label}>
+                        {activityOf(t)!.icon}
                       </span>
-                    ))}
+                    )}
+                    {x.name}
                   </div>
-                )}
-              </div>
-            ))}
+                  {x.route && <div className="track-route">{x.route}</div>}
+                  <div className="track-meta">
+                    {t.startTime ? new Date(t.startTime).toLocaleDateString() : "no date"} · {formatDistance(t.distanceM)}{" "}
+                    · {t.pointCount.toLocaleString()} pts
+                    {t.missing && <span className="missing"> · missing</span>}
+                    {t.edited && <span> · edited</span>}
+                    {/* Last: a long list may be cut off, the flags must not. */}
+                    {x.countries && ` · ${x.countries}`}
+                  </div>
+                  {x.file && (
+                    <div className="track-file" title={t.filePath}>
+                      {x.file}
+                    </div>
+                  )}
+                  {t.tags.length > 0 && (
+                    <div className="track-tags">
+                      {t.tags.map((g) => (
+                        <span key={g} className="tag small">
+                          {g}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       </section>

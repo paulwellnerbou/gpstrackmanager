@@ -245,12 +245,14 @@ textarea {
   white-space: nowrap;
 }
 .track-meta,
-.track-route {
+.track-route,
+.track-file {
   color: var(--muted);
   font-size: 11.5px;
   margin-top: 2px;
 }
 .track-route,
+.track-file,
 .list-row .track-meta {
   overflow: hidden;
   text-overflow: ellipsis;
