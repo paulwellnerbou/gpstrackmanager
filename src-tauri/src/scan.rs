@@ -55,12 +55,12 @@ pub fn scan_root(db_path: &Path, root_id: i64, on_progress: &(dyn Fn(&ScanProgre
         let Ok(meta) = entry.metadata() else { continue };
         let path_str = path.to_string_lossy().into_owned();
         let (size, mtime) = (meta.len() as i64, file_mtime(&meta));
-        let unchanged = known
-            .get(&path_str)
-            .is_some_and(|k| k.size == size && k.mtime == mtime && k.parser_version >= PARSER_VERSION);
+        let known = known.get(&path_str);
+        let unchanged =
+            known.is_some_and(|k| k.size == size && k.mtime == mtime && k.parser_version >= PARSER_VERSION);
         if let Some(format) = Format::from_path(path) {
             seen.push(path_str);
-            if !unchanged {
+            if !unchanged || known.is_some_and(|k| k.unsupported) {
                 todo.push((path.to_path_buf(), format));
             }
         } else if parse::is_known_unsupported(path) {

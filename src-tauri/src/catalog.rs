@@ -246,12 +246,16 @@ pub struct KnownFile {
     pub size: i64,
     pub mtime: i64,
     pub parser_version: i64,
+    /// Catalogued before a reader for its format existed.
+    pub unsupported: bool,
 }
 
 pub fn known_files(conn: &Connection, root_id: i64) -> Result<HashMap<String, KnownFile>> {
-    let mut st = conn.prepare("SELECT path, size, mtime, parser_version FROM files WHERE root_id = ?1")?;
+    let mut st =
+        conn.prepare("SELECT path, size, mtime, parser_version, status = 'unsupported' FROM files WHERE root_id = ?1")?;
     let rows = st.query_map([root_id], |r| {
-        Ok((r.get::<_, String>(0)?, KnownFile { size: r.get(1)?, mtime: r.get(2)?, parser_version: r.get(3)? }))
+        let file = KnownFile { size: r.get(1)?, mtime: r.get(2)?, parser_version: r.get(3)?, unsupported: r.get(4)? };
+        Ok((r.get::<_, String>(0)?, file))
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }

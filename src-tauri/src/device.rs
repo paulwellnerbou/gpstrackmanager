@@ -106,7 +106,8 @@ fn is_track_file(rel: &Path) -> bool {
     match Format::from_path(rel) {
         Some(Format::Fit) => dirs.iter().any(|d| d == "activity" || d == "activities"),
         Some(Format::Gpx) => dirs.is_empty() || dirs.iter().any(|d| d != "garmin"),
-        None => false,
+        // Archive formats (KML, NMEA, Holux logs) are not what devices are imported for.
+        _ => false,
     }
 }
 

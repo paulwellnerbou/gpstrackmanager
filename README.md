@@ -10,9 +10,9 @@ they are, and nothing in them changes unless you ask for it.
 
 **Browse your whole archive**
 
-- Add one or more folders as your library. The app finds every GPX and FIT file in them, also
-  files with several tracks or hundreds of thousands of points, and keeps up with new and changed
-  files when you press **Sync**.
+- Add one or more folders as your library. The app finds every track file in them (GPX, FIT,
+  KML, NMEA and more, see [Supported files](#supported-files)), also files with several tracks or
+  hundreds of thousands of points, and keeps up with new and changed files when you press **Sync**.
 - See every track of the list on one map (a search narrows the map down too), or turn off
   **All tracks** to see only the selected one. Click a line on the map to select its track.
 - Stays fast with big archives: thousands of tracks and millions of points show on the map at
@@ -65,8 +65,9 @@ file changes only when you choose **Write to file…**. Even then:
 - the new file is read back and checked against the catalog before it replaces anything,
 - file permissions, Finder tags and the creation date are kept.
 
-A FIT file is written as a new `.gpx` next to it. The written file holds what you see in the app;
-anything the import skipped (such as sensor data) stays in the backup.
+A file in any other format (FIT, KML, NMEA, …) is written as a new `.gpx` next to it. The
+written file holds what you see in the app; anything the import skipped (such as sensor data)
+stays in the backup.
 
 ## Privacy
 
@@ -98,8 +99,14 @@ on macOS.
 ## Supported files
 
 - **GPX** (tracks, routes, waypoints) and **FIT** (Garmin activities, with laps).
-- NMEA, KML/KMZ, TRL and ITM files are found and listed as unsupported for now (the link under
-  the library folder shows them).
+- **KML** and **KMZ** (Google Earth): lines and `gx:Track` tracks become tracks, placemarks
+  become waypoints. Holux ezTour KML stores a track's times as one placemark per point, named
+  with the time but without a time zone; those times are read in your computer's time zone.
+- **NMEA** logs (`RMC` and `GGA` sentences).
+- **Holux** loggers such as the M-241: binary `.trl` track logs and ezTour `.itm` projects (all
+  tracks and points of interest of the project).
+- TCX, PLT, IGC and CSV files are found and listed as unsupported for now (the link under the
+  library folder shows them).
 
 ## For developers
 
@@ -118,7 +125,7 @@ cd src-tauri && cargo run --release --example scan -- /tmp/catalog.sqlite /path/
 
 - **Catalog**: SQLite in the app data dir (`~/Library/Application Support/de.wellnerbou.gpstrackmanager/catalog.sqlite`).
   Library folders are scanned incrementally (size + mtime); points are stored as compact binary columns.
-- **Huge tracks**: GPX is parsed streaming (`quick-xml`), never as a DOM. Each point stores its
+- **Huge tracks**: GPX and KML are parsed streaming (`quick-xml`), never as a DOM. Each point stores its
   Douglas–Peucker importance, so any zoom level is one filter pass; the map only receives the
   points visible in the viewport at screen resolution.
 - **Devices**: mounted volumes with track files in known folders (`Garmin/Activity`, `GPX`, …).
@@ -128,7 +135,7 @@ cd src-tauri && cargo run --release --example scan -- /tmp/catalog.sqlite /path/
   `examples/build_places.rs`).
 - **Glitches**: jumps faster than 300 m/s and recording gaps (> 2 km after > 5 min) start a new
   segment.
-- **Layout**: `src-tauri/src/` holds `parse/` (GPX, FIT), `lod.rs`, `process.rs`, `catalog.rs`,
+- **Layout**: `src-tauri/src/` holds `parse/` (GPX, FIT, KML/KMZ, NMEA, TRL, ITM), `lod.rs`, `process.rs`, `catalog.rs`,
   `scan.rs`, `device.rs`, `edit.rs`, `cleanup.rs`, `export.rs` (KML, GPX), `places.rs` and
   `lib.rs` (Tauri commands); `src/` holds `App.tsx` and `components/`.
 - **App icon**: `src-tauri/icons/app-icon.svg`; regenerate the sizes with `npx tauri icon`.
