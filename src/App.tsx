@@ -547,11 +547,11 @@ function loadMarkerOptions(): MarkerOptions {
 const SIDEBAR_WIDTH_KEY = "sidebarWidth";
 const DETAILS_WIDTH_KEY = "detailsWidth";
 const SIDEBAR_DEFAULT = 300;
-const DETAILS_DEFAULT = 380;
+const DETAILS_DEFAULT = 430;
 const SIDEBAR_MIN = 200;
-// The point table's fixed columns, with a date in the time column, plus a full "lat, lon"
-// pair need about this much.
-const DETAILS_MIN = 350;
+// The point table's columns need about this much, with a date in the time column and a
+// full "lat, lon" pair.
+const DETAILS_MIN = 420;
 const MAP_MIN = 320;
 /**
  * How long the closing details pane stays mounted: a little longer than `--pane` in
