@@ -101,13 +101,9 @@ export function TrackTree(p: Props) {
   );
   const box = useRef<HTMLDivElement>(null);
   const n = table?.length ?? 0;
-  // A time alone is ambiguous once the track runs past midnight; the same rule as the
-  // map labels and the clean-up panel. Waypoints may lie on other days than the track.
+  // Points and waypoints always carry their date; segment ranges only once the track runs
+  // past midnight, where a time alone becomes ambiguous.
   const multiDay = table != null && spansDays(table.time);
-  const wpMultiDay = useMemo(
-    () => multiDay || spansDays(Float64Array.from([...waypoints.map((w) => w.time ?? NaN), track.startTime ?? NaN])),
-    [waypoints, multiDay, track.startTime],
-  );
   const timeOfDay = (ms: number | null) => formatClock(ms, multiDay);
 
   // Reset per file only: edits reload the waypoints and must not undo what the user collapsed.
@@ -272,14 +268,14 @@ export function TrackTree(p: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.reveal, blocks]);
 
-  const pointRow = (i: number, depth: number, top: number) => {
+  const pointRow = (i: number, top: number) => {
     const t = table!;
     const gap = t.segStart[i] === 2;
     return (
       <div
         key={`p${i}`}
         className={`tree-row point-row${selection.has(i) ? " selected" : ""}${gap ? " gap-start" : ""}`}
-        style={{ top, paddingLeft: 8 + depth * 14 }}
+        style={{ top }}
         title={gap ? "Line break: GPS glitch or recording gap" : undefined}
         onMouseDown={(e) => {
           if (isSecondaryClick(e)) return;
@@ -295,11 +291,10 @@ export function TrackTree(p: Props) {
         onMouseEnter={() => p.onHover([t.lon[i], t.lat[i]])}
       >
         <span className="num">{i + 1}</span>
-        <span>{timeOfDay(t.time[i])}</span>
+        <span>{formatClock(t.time[i], true)}</span>
         <span className="num">{Number.isNaN(t.ele[i]) ? "—" : Math.round(t.ele[i])}</span>
-        <span className="coord">
-          {t.lat[i].toFixed(5)}, {t.lon[i].toFixed(5)}
-        </span>
+        <span className="num">{t.lat[i].toFixed(5)}</span>
+        <span className="num">{t.lon[i].toFixed(5)}</span>
       </div>
     );
   };
@@ -378,7 +373,7 @@ export function TrackTree(p: Props) {
               {w.name ?? "Waypoint"}
             </span>
             <span className="muted">
-              {w.time != null ? formatClock(w.time, wpMultiDay) : ""}
+              {w.time != null ? formatClock(w.time, true) : ""}
               {w.ele != null ? ` · ${Math.round(w.ele)} m` : ""}
             </span>
           </>,
@@ -465,7 +460,7 @@ export function TrackTree(p: Props) {
         );
       }
       case "points":
-        return pointRow(b.start + r, b.depth, top);
+        return pointRow(b.start + r, top);
     }
   };
 
@@ -495,7 +490,7 @@ export function TrackTree(p: Props) {
   const menuSeg = shownMenu?.target === "seg" ? menuView.shown!.segments[shownMenu.seg] : null;
 
   return (
-    <div className={multiDay ? "points multi-day" : "points"}>
+    <div className="points">
       <div className="points-header">
         <span>Contents</span>
         <span className="muted">
@@ -535,7 +530,8 @@ export function TrackTree(p: Props) {
         <span className="num">#</span>
         <span>Time</span>
         <span className="num">Ele</span>
-        <span>Lat, Lon</span>
+        <span className="num">Lat</span>
+        <span className="num">Lon</span>
       </div>
       <div
         ref={box}
