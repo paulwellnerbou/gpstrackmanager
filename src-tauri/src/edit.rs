@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 use rusqlite::{Connection, Transaction, params};
 
 use crate::catalog::{self, TrackData};
-use crate::cleanup::{StayOptions, find_stays};
+use crate::cleanup::{StayOptions, find_stays_skipping, is_zero_fix};
 use crate::geo::{bearing_deg, haversine_m};
 use crate::model::{NO_TIME, ParsedTrack, Points};
 use crate::parse::Format;
@@ -154,18 +154,24 @@ pub fn delete_points(conn: &mut Connection, track_id: i64, indices: &[u32]) -> R
     Ok(())
 }
 
-/// Collapses every stay into its spot: the stay's first and last points move there and
-/// keep the arrival and departure times, the fixes in between are removed. Returns the
-/// number of points removed.
-pub fn clean_up_stays(conn: &mut Connection, track_id: i64, o: StayOptions) -> Result<usize> {
+/// Collapses every stay into its spot (when `stays` is given): the stay's first and last
+/// points move there and keep the arrival and departure times, the fixes in between are
+/// removed. With `drop_zero`, also removes the points `is_zero_fix` matches, and stays are
+/// found without them. One undo step.
+/// Returns the number of points removed.
+pub fn clean_up(conn: &mut Connection, track_id: i64, stays: Option<StayOptions>, drop_zero: bool) -> Result<usize> {
     let mut data = catalog::load_track_data(conn, track_id)?;
-    let stays = find_stays(&data.coords, &data.ele, &data.time, &data.file_seg_starts, o);
-    if stays.is_empty() {
-        return Ok(0);
-    }
     let n = data.coords.len();
     let mut drop = vec![false; n];
-    for s in &stays {
+    if drop_zero {
+        for (d, &c) in drop.iter_mut().zip(&data.coords) {
+            *d = is_zero_fix(c);
+        }
+    }
+    let found = stays.map_or_else(Vec::new, |o| {
+        find_stays_skipping(&data.coords, &data.ele, &data.time, &data.file_seg_starts, &drop, o)
+    });
+    for s in &found {
         let (a, b) = (s.start as usize, s.end as usize);
         for i in [a, b] {
             data.coords[i] = (s.lat, s.lon);
@@ -174,8 +180,14 @@ pub fn clean_up_stays(conn: &mut Connection, track_id: i64, o: StayOptions) -> R
         drop[a + 1..b].fill(true);
     }
     let keep: Vec<usize> = (0..n).filter(|&i| !drop[i]).collect();
-    let processed = process(subset(&data, &keep));
     let removed = n - keep.len();
+    if removed == 0 {
+        return Ok(0);
+    }
+    if keep.len() < 2 {
+        bail!("A track needs at least two points.");
+    }
+    let processed = process(subset(&data, &keep));
     let tx = catalog::write_tx(conn)?;
     undo::record(&tx, &format!("Clean up ({removed} points)"), &[track_id], None)?;
     write_geometry(&tx, track_id, &processed)?;
@@ -376,7 +388,7 @@ mod tests {
         let before = catalog::load_track_data(&conn, id).unwrap();
 
         let o = StayOptions { radius_m: 50.0, min_duration_s: 600.0 };
-        let removed = clean_up_stays(&mut conn, id, o).unwrap();
+        let removed = clean_up(&mut conn, id, Some(o), false).unwrap();
         let after = catalog::load_track_data(&conn, id).unwrap();
         assert_eq!(removed, before.coords.len() - after.coords.len());
         assert!(removed >= 76, "removed {removed}");
@@ -388,12 +400,109 @@ mod tests {
         assert_eq!(after.time[spot + 1] - after.time[spot], before.time[spot + removed + 1] - before.time[spot]);
         assert!(catalog::list_tracks(&conn).unwrap()[0].edited);
         // Nothing left to clean.
-        assert_eq!(clean_up_stays(&mut conn, id, o).unwrap(), 0);
+        assert_eq!(clean_up(&mut conn, id, Some(o), true).unwrap(), 0);
         let file_id = catalog::list_tracks(&conn).unwrap()[0].file_id;
         assert_eq!(undo::last_edit(&conn, file_id).unwrap().unwrap().label, format!("Clean up ({removed} points)"));
         undo::undo(&mut conn, file_id).unwrap();
         let undone = catalog::load_track_data(&conn, id).unwrap();
         assert_eq!((undone.coords, undone.time), (before.coords, before.time));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clean_up_drops_fixes_at_a_zero_coordinate() {
+        let dir = std::env::temp_dir().join(format!("gtm-zero-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gpx = dir.join("z.gpx");
+        let pts = [(50.0, 8.0), (50.001, 8.0), (0.0, 8.0), (50.002, 0.0), (50.003, 0.00001), (50.004, 8.0)];
+        let body: String = pts.iter().map(|(lat, lon)| format!(r#"<trkpt lat="{lat}" lon="{lon}"/>"#)).collect();
+        std::fs::write(&gpx, format!("<gpx><trk><trkseg>{body}</trkseg></trk></gpx>")).unwrap();
+
+        let mut conn = catalog::open(&dir.join("z.sqlite")).unwrap();
+        let root = catalog::add_root(&conn, dir.to_str().unwrap()).unwrap();
+        catalog::write_import(&mut conn, root.id, &process_file(&gpx, Format::Gpx)).unwrap();
+        let id = catalog::list_tracks(&conn).unwrap()[0].id;
+
+        assert_eq!(clean_up(&mut conn, id, None, true).unwrap(), 2);
+        let after = catalog::load_track_data(&conn, id).unwrap();
+        assert_eq!(after.coords, vec![(50.0, 8.0), (50.001, 8.0), (50.003, 0.00001), (50.004, 8.0)]);
+        assert_eq!(clean_up(&mut conn, id, None, true).unwrap(), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clean_up_collapses_stays_and_drops_zero_fixes_in_one_edit() {
+        let dir = std::env::temp_dir().join(format!("gtm-both-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gpx = dir.join("b.gpx");
+        // Walk, a 40-minute stay with 15 zero fixes in its middle, walk on, one more zero fix.
+        let mut pts = Vec::new();
+        for i in 0..5 {
+            pts.push((50.0 + i as f64 * 0.002, 8.0));
+        }
+        for i in 0..40 {
+            let d = [0.0001, -0.0002, 0.00015, -0.00005][i % 4];
+            pts.push((50.01 + d, 8.0 - d));
+            if i == 20 {
+                pts.extend(std::iter::repeat_n((0.0, 8.0), 15));
+            }
+        }
+        for i in 1..=5 {
+            pts.push((50.01 + i as f64 * 0.002, 8.0));
+        }
+        pts.push((50.03, 0.0));
+        pts.push((50.031, 8.0));
+        let body: String = pts
+            .iter()
+            .enumerate()
+            .map(|(i, (lat, lon))| format!(r#"<trkpt lat="{lat}" lon="{lon}"><time>{}</time></trkpt>"#, chrono_like(i as i64 * 60)))
+            .collect();
+        std::fs::write(&gpx, format!("<gpx><trk><trkseg>{body}</trkseg></trk></gpx>")).unwrap();
+
+        let mut conn = catalog::open(&dir.join("b.sqlite")).unwrap();
+        let root = catalog::add_root(&conn, dir.to_str().unwrap()).unwrap();
+        catalog::write_import(&mut conn, root.id, &process_file(&gpx, Format::Gpx)).unwrap();
+        let id = catalog::list_tracks(&conn).unwrap()[0].id;
+        let before = catalog::load_track_data(&conn, id).unwrap();
+
+        let o = StayOptions { radius_m: 50.0, min_duration_s: 600.0 };
+        let removed = clean_up(&mut conn, id, Some(o), true).unwrap();
+        let after = catalog::load_track_data(&conn, id).unwrap();
+        assert_eq!(removed, before.coords.len() - after.coords.len());
+        assert!(!after.coords.iter().any(|&c| is_zero_fix(c)));
+        // One stay across the zero fixes: only its arrival and departure are left at the spot.
+        assert_eq!(after.coords.iter().filter(|c| (c.0 - 50.01).abs() < 0.0003 && c.1 > 7.9).count(), 2);
+
+        let file_id = catalog::list_tracks(&conn).unwrap()[0].file_id;
+        undo::undo(&mut conn, file_id).unwrap();
+        let undone = catalog::load_track_data(&conn, id).unwrap();
+        assert_eq!((undone.coords, undone.time), (before.coords, before.time));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clean_up_keeps_at_least_two_points() {
+        let dir = std::env::temp_dir().join(format!("gtm-two-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gpx = dir.join("t.gpx");
+        let body: String = [(50.0, 8.0), (0.0, 8.0), (50.0, 0.0), (50.001, 8.0)]
+            .iter()
+            .map(|(lat, lon)| format!(r#"<trkpt lat="{lat}" lon="{lon}"/>"#))
+            .collect();
+        std::fs::write(&gpx, format!("<gpx><trk><trkseg>{body}</trkseg></trk></gpx>")).unwrap();
+        let mut conn = catalog::open(&dir.join("t.sqlite")).unwrap();
+        let root = catalog::add_root(&conn, dir.to_str().unwrap()).unwrap();
+        catalog::write_import(&mut conn, root.id, &process_file(&gpx, Format::Gpx)).unwrap();
+        let id = catalog::list_tracks(&conn).unwrap()[0].id;
+        assert_eq!(clean_up(&mut conn, id, None, true).unwrap(), 2);
+
+        std::fs::write(&gpx, format!("<gpx><trk><trkseg>{}</trkseg></trk></gpx>", r#"<trkpt lat="50" lon="8"/><trkpt lat="0" lon="8"/><trkpt lat="0" lon="8"/>"#)).unwrap();
+        let mut conn = catalog::open(&dir.join("t2.sqlite")).unwrap();
+        let root = catalog::add_root(&conn, dir.to_str().unwrap()).unwrap();
+        catalog::write_import(&mut conn, root.id, &process_file(&gpx, Format::Gpx)).unwrap();
+        let id = catalog::list_tracks(&conn).unwrap()[0].id;
+        assert!(clean_up(&mut conn, id, None, true).is_err());
+        assert_eq!(catalog::load_track_data(&conn, id).unwrap().coords.len(), 3);
         std::fs::remove_dir_all(&dir).ok();
     }
 

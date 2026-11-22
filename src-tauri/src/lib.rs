@@ -198,22 +198,36 @@ async fn delete_track_points(app: AppHandle, id: i64, indices: Vec<u32>) -> CmdR
     blocking(app, move |s| s.write(|c| edit::delete_points(c, id, &indices))).await
 }
 
-/// Preview for `clean_up_track`.
+/// The stays `clean_up_track` collapses; with `drop_zero` they are found without the zero fixes.
 #[tauri::command]
-async fn find_track_stays(app: AppHandle, id: i64, radius_m: f64, min_duration_s: f64) -> CmdResult<Vec<cleanup::Stay>> {
+async fn find_track_stays(
+    app: AppHandle,
+    id: i64,
+    radius_m: f64,
+    min_duration_s: f64,
+    drop_zero: bool,
+) -> CmdResult<Vec<cleanup::Stay>> {
     blocking(app, move |s| {
         let data = s.track(id)?;
         let o = cleanup::StayOptions { radius_m, min_duration_s };
-        Ok(cleanup::find_stays(&data.coords, &data.ele, &data.time, &data.file_seg_starts, o))
+        let skip: Vec<bool> = data.coords.iter().map(|&c| drop_zero && cleanup::is_zero_fix(c)).collect();
+        Ok(cleanup::find_stays_skipping(&data.coords, &data.ele, &data.time, &data.file_seg_starts, &skip, o))
     })
     .await
 }
 
-/// Returns the number of points removed.
+/// Collapses stays unless `radius_m` is None; with `drop_zero`, also removes fixes at a 0
+/// coordinate. Returns the number of points removed.
 #[tauri::command]
-async fn clean_up_track(app: AppHandle, id: i64, radius_m: f64, min_duration_s: f64) -> CmdResult<usize> {
-    let o = cleanup::StayOptions { radius_m, min_duration_s };
-    blocking(app, move |s| s.write(|c| edit::clean_up_stays(c, id, o))).await
+async fn clean_up_track(
+    app: AppHandle,
+    id: i64,
+    radius_m: Option<f64>,
+    min_duration_s: f64,
+    drop_zero: bool,
+) -> CmdResult<usize> {
+    let o = radius_m.map(|radius_m| cleanup::StayOptions { radius_m, min_duration_s });
+    blocking(app, move |s| s.write(|c| edit::clean_up(c, id, o, drop_zero))).await
 }
 
 #[tauri::command]
