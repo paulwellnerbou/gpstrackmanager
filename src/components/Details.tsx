@@ -78,7 +78,7 @@ export function Details({ track, allTags, onSaveMeta, onSetTags, onSetActivity, 
 
   const writeToFile = () =>
     call(async () => {
-      const gpxName = track.format === "fit" ? fileName.replace(/\.fit$/i, ".gpx") : null;
+      const gpxName = track.format === "gpx" ? null : fileName.replace(/\.[^.]+$/, ".gpx");
       const ok = await ask(
         `Write the catalog version of ${fileName} into the file?\n\n` +
           (gpxName ? `It is saved as ${gpxName}. ` : "") +

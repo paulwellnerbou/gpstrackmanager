@@ -301,8 +301,9 @@ pub struct WrittenFile {
 
 /// Writes the catalog version of a file (all its tracks, split-off parts as tracks of their
 /// own, and its waypoints) as GPX over the original, which is kept as a `.bak` the scanner
-/// ignores. A FIT file becomes a GPX file of the same name. Afterwards the file's tracks
-/// are plain tracks of the new file: not edited, no undo history, user metadata kept.
+/// ignores. A file in another format (FIT, KML, …) becomes a GPX file of the same name.
+/// Afterwards the file's tracks are plain tracks of the new file: not edited, no undo
+/// history, user metadata kept.
 ///
 /// Only what the catalog holds is written: points the import skipped and data it does not
 /// read (per-point speed, sensor data, extensions) are only in the backup.

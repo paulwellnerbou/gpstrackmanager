@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use anyhow::{Result, bail};
 use chrono::{DateTime, NaiveDateTime};
 use quick_xml::Reader;
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesRef, BytesStart, Event};
 
 use crate::model::{ParsedFile, ParsedTrack, Points, Waypoint};
 
@@ -23,7 +23,7 @@ enum Capture {
 
 /// Decodes the file as UTF-8, UTF-16 (with BOM) or, for old loggers that wrote ISO-8859-1
 /// without declaring it, Latin-1.
-fn decode(bytes: &[u8]) -> Cow<'_, str> {
+pub(crate) fn decode(bytes: &[u8]) -> Cow<'_, str> {
     let utf16 = |be: bool| {
         let units: Vec<u16> = bytes[2..]
             .chunks_exact(2)
@@ -165,20 +165,7 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
             },
             Event::Text(t) if capture != Capture::None => buf.push_str(&t.xml10_content()),
             Event::CData(t) if capture != Capture::None => buf.push_str(&t.xml10_content()),
-            Event::GeneralRef(r) if capture != Capture::None => {
-                if let Ok(Some(c)) = r.resolve_char_ref() {
-                    buf.push(c);
-                } else {
-                    buf.push_str(match &*r {
-                        "amp" => "&",
-                        "lt" => "<",
-                        "gt" => ">",
-                        "quot" => "\"",
-                        "apos" => "'",
-                        _ => "",
-                    });
-                }
-            }
+            Event::GeneralRef(r) if capture != Capture::None => push_ref(&mut buf, &r),
             Event::End(_) => {
                 if capture != Capture::None && depth == capture_depth {
                     let value = buf.trim();
@@ -233,6 +220,22 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
         tracks.push(t);
     }
     Ok(ParsedFile { tracks, waypoints })
+}
+
+/// Appends the text of an entity or character reference.
+pub(crate) fn push_ref(buf: &mut String, r: &BytesRef) {
+    if let Ok(Some(c)) = r.resolve_char_ref() {
+        buf.push(c);
+    } else {
+        buf.push_str(match &**r {
+            "amp" => "&",
+            "lt" => "<",
+            "gt" => ">",
+            "quot" => "\"",
+            "apos" => "'",
+            _ => "",
+        });
+    }
 }
 
 fn new_waypoint(e: &BytesStart) -> Waypoint {
