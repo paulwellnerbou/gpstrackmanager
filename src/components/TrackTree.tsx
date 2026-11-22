@@ -6,6 +6,8 @@ import {
   baseName,
   displayName,
   formatDistance,
+  pointHeading,
+  pointSpeed,
   type PointTable,
   type TrackSummary,
   type WaypointRow,
@@ -50,6 +52,19 @@ function formatSpeed(ms: number) {
   if (kmh < 9.95) return kmh.toFixed(1);
   const whole = Math.round(kmh);
   return whole < 10_000 ? String(whole) : compact.format(kmh);
+}
+
+const CALCULATED_HINT = "Grey italic: not in the file, calculated from the neighbouring points.";
+
+function recordedOrCalculated(v: { value: number; recorded: boolean }, format: (v: number) => string) {
+  if (Number.isNaN(v.value)) return <span className="num">—</span>;
+  return v.recorded ? (
+    <span className="num">{format(v.value)}</span>
+  ) : (
+    <span className="num calculated" title="Calculated from the neighbouring points; not in the file">
+      {format(v.value)}
+    </span>
+  );
 }
 
 interface Props {
@@ -310,8 +325,8 @@ export function TrackTree(p: Props) {
         <span className="num">{Number.isNaN(t.ele[i]) ? "—" : Math.round(t.ele[i])}</span>
         <span className="num">{t.lat[i].toFixed(5)}</span>
         <span className="num">{t.lon[i].toFixed(5)}</span>
-        <span className="num">{formatSpeed(t.speed[i])}</span>
-        <span className="num">{Number.isNaN(t.bearing[i]) ? "—" : `${Math.round(t.bearing[i]) % 360}°`}</span>
+        {recordedOrCalculated(pointSpeed(t, i), formatSpeed)}
+        {recordedOrCalculated(pointHeading(t, i), (d) => `${Math.round(d) % 360}°`)}
       </div>
     );
   };
@@ -549,8 +564,11 @@ export function TrackTree(p: Props) {
         <span className="num">Ele</span>
         <span className="num">Lat</span>
         <span className="num">Lon</span>
-        <span className="num" title="Speed in km/h, from the neighbouring points">km/h</span>
-        <span className="num" title="Heading in degrees clockwise from north, from the neighbouring points">
+        <span className="num" title={`Speed in km/h as the file records it.\n${CALCULATED_HINT}`}>km/h</span>
+        <span
+          className="num"
+          title={`Heading in degrees clockwise from north as the file records it.\n${CALCULATED_HINT}`}
+        >
           Hdg
         </span>
       </div>

@@ -94,10 +94,25 @@ export interface PointTable {
   segStart: Uint8Array;
   /** Metres from the start, gaps between segments not counted. */
   dist: Float64Array;
-  /** m/s, NaN if unknown. */
+  /** m/s calculated from the neighbouring points, NaN if unknown. */
   speed: Float64Array;
-  /** Degrees clockwise from north, NaN if unknown. */
+  /** Degrees clockwise from north calculated from the neighbouring points, NaN if unknown. */
   bearing: Float64Array;
+  /** m/s as the file records it, NaN where it has none. */
+  recordedSpeed: Float64Array;
+  /** Course in degrees clockwise from north as the file records it, NaN where it has none. */
+  recordedCourse: Float64Array;
+}
+
+/** The recorded value where the file has one, else the calculated one. */
+export function pointSpeed(t: PointTable, i: number): { value: number; recorded: boolean } {
+  const r = t.recordedSpeed[i];
+  return Number.isNaN(r) ? { value: t.speed[i], recorded: false } : { value: r, recorded: true };
+}
+
+export function pointHeading(t: PointTable, i: number): { value: number; recorded: boolean } {
+  const r = t.recordedCourse[i];
+  return Number.isNaN(r) ? { value: t.bearing[i], recorded: false } : { value: r, recorded: true };
 }
 
 /** Where the logger lay still; `start` and `end` (inclusive) keep arrival and departure. */
@@ -231,7 +246,7 @@ export const api = {
   releaseTrackCache: () => invoke<void>("release_track_cache"),
   async pointTable(id: number): Promise<PointTable> {
     const v = f64(await invoke<ArrayBuffer>("get_track_point_table", { id }));
-    const C = 8;
+    const C = 10;
     const n = v.length / C;
     const col = (c: number) => {
       const out = new Float64Array(n);
@@ -250,6 +265,8 @@ export const api = {
       dist: col(5),
       speed: col(6),
       bearing: col(7),
+      recordedSpeed: col(8),
+      recordedCourse: col(9),
     };
   },
 

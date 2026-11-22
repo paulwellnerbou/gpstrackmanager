@@ -10,6 +10,10 @@ pub struct Points {
     pub ele: Vec<f32>,
     /// Unix milliseconds, `NO_TIME` when unknown.
     pub time: Vec<i64>,
+    /// Speed in m/s as the device recorded it; NaN when the file has none.
+    pub speed: Vec<f32>,
+    /// Course over ground in degrees clockwise from north as recorded; NaN when the file has none.
+    pub course: Vec<f32>,
     /// Start index of every segment (GPX `trkseg`).
     pub seg_starts: Vec<u32>,
 }
@@ -31,6 +35,18 @@ impl Points {
     }
 
     pub fn push(&mut self, lat: f64, lon: f64, ele: Option<f32>, time: Option<i64>) {
+        self.push_recorded(lat, lon, ele, time, None, None);
+    }
+
+    pub fn push_recorded(
+        &mut self,
+        lat: f64,
+        lon: f64,
+        ele: Option<f32>,
+        time: Option<i64>,
+        speed: Option<f32>,
+        course: Option<f32>,
+    ) {
         // Loggers without a fix write 0/0 ("null island") instead of omitting the point.
         if lat == 0.0 && lon == 0.0 {
             return;
@@ -42,6 +58,8 @@ impl Points {
         self.lon.push(lon);
         self.ele.push(ele.filter(|e| (-500.0..=9000.0).contains(e)).unwrap_or(f32::NAN));
         self.time.push(time.unwrap_or(NO_TIME));
+        self.speed.push(speed.filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(f32::NAN));
+        self.course.push(course.filter(|v| v.is_finite()).map(|c| c.rem_euclid(360.0)).unwrap_or(f32::NAN));
     }
 
     /// Non-empty `[start, end)` ranges of all segments.

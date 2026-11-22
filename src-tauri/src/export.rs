@@ -78,7 +78,7 @@ pub fn gpx(out: &mut impl std::io::Write, tracks: &[GpxTrack], waypoints: &[Wayp
     writeln!(out, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
     writeln!(
         out,
-        r#"<gpx version="1.1" creator="GPS Track Manager" xmlns="http://www.topografix.com/GPX/1/1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">"#
+        r#"<gpx version="1.1" creator="GPS Track Manager" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">"#
     )?;
     for w in waypoints {
         writeln!(out, r#"<wpt lat="{:.7}" lon="{:.7}">"#, w.lat, w.lon)?;
@@ -112,6 +112,18 @@ pub fn gpx(out: &mut impl std::io::Write, tracks: &[GpxTrack], waypoints: &[Wayp
                 }
                 if let Some(t) = Some(d.time[i]).filter(|&t| t != NO_TIME).and_then(gpx_time) {
                     write!(out, "<time>{t}</time>")?;
+                }
+                let (speed, course) = (d.speed[i], d.course[i]);
+                if !speed.is_nan() || !course.is_nan() {
+                    // GPX 1.1 has no speed or course; Garmin's extension is the one most tools read.
+                    write!(out, "<extensions><gpxtpx:TrackPointExtension>")?;
+                    if !speed.is_nan() {
+                        write!(out, "<gpxtpx:speed>{speed}</gpxtpx:speed>")?;
+                    }
+                    if !course.is_nan() {
+                        write!(out, "<gpxtpx:course>{course}</gpxtpx:course>")?;
+                    }
+                    write!(out, "</gpxtpx:TrackPointExtension></extensions>")?;
                 }
                 writeln!(out, "</trkpt>")?;
             }

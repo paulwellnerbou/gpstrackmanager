@@ -15,7 +15,7 @@ const MAX_EDITS_PER_FILE: i64 = 20;
 /// Geometry columns of `tracks` that point edits change.
 const TRACK_COLUMNS: &str =
     "start_time, end_time, point_count, distance_m, min_lat, min_lon, max_lat, max_lon, min_ele, max_ele, edited";
-const DATA_COLUMNS: &str = "coords, ele, time, importance, segs, overview, file_segs";
+const DATA_COLUMNS: &str = "coords, ele, time, importance, segs, overview, file_segs, speed, course";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

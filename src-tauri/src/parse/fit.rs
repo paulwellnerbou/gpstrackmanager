@@ -33,7 +33,8 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
                     Some(Value::Timestamp(t)) => Some(t.timestamp_millis()),
                     _ => None,
                 };
-                points.push(lat, lon, ele, time);
+                let speed = field(rec, "enhanced_speed").or_else(|| field(rec, "speed")).and_then(num).map(|v| v as f32);
+                points.push_recorded(lat, lon, ele, time, speed, None);
             }
             MesgNum::Event => {
                 let is_timer = matches!(field(rec, "event"), Some(Value::String(s)) if s == "timer");

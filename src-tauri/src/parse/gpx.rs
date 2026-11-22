@@ -15,6 +15,8 @@ enum Capture {
     Type,
     Ele,
     Time,
+    Speed,
+    Course,
     WptName,
     WptDesc,
     WptCmt,
@@ -66,6 +68,8 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
     let mut pt_lon = f64::NAN;
     let mut pt_ele: Option<f32> = None;
     let mut pt_time: Option<i64> = None;
+    let mut pt_speed: Option<f32> = None;
+    let mut pt_course: Option<f32> = None;
     let mut capture = Capture::None;
     let mut capture_depth = 0usize;
     let mut buf = String::new();
@@ -106,6 +110,8 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
                         (pt_lat, pt_lon) = lat_lon(&e);
                         pt_ele = None;
                         pt_time = None;
+                        pt_speed = None;
+                        pt_course = None;
                         pt_depth = Some(depth);
                     }
                     "wpt" if trk_depth.is_none() && wpt_depth.is_none() => {
@@ -120,6 +126,15 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
                             match tag {
                                 "ele" => Capture::Ele,
                                 "time" => Capture::Time,
+                                "speed" => Capture::Speed,
+                                "course" => Capture::Course,
+                                _ => Capture::None,
+                            }
+                        } else if pt_depth.is_some_and(|d| d < parent) {
+                            // GPX 1.1 has no speed or course; writers put them in <extensions>.
+                            match tag {
+                                "speed" => Capture::Speed,
+                                "course" => Capture::Course,
                                 _ => Capture::None,
                             }
                         } else if wpt_depth == Some(parent) {
@@ -158,7 +173,7 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
                 "trkpt" | "rtept" if pt_depth.is_none() => {
                     if let Some(t) = current.as_mut() {
                         let (lat, lon) = lat_lon(&e);
-                        push_point(&mut t.points, lat, lon, None, None);
+                        push_point(&mut t.points, lat, lon, None, None, None, None);
                     }
                 }
                 _ => {}
@@ -179,6 +194,9 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
                         }
                         Capture::Ele => pt_ele = value.parse::<f32>().ok().filter(|v| v.is_finite()),
                         Capture::Time => pt_time = parse_time(value),
+                        // The first one wins: some loggers repeat it rounded in <extensions>.
+                        Capture::Speed => pt_speed = pt_speed.or_else(|| value.parse().ok()),
+                        Capture::Course => pt_course = pt_course.or_else(|| value.parse().ok()),
                         Capture::WptName => set_text(wpt.as_mut().map(|w| &mut w.name), value),
                         Capture::WptDesc => set_text(wpt.as_mut().map(|w| &mut w.description), value),
                         Capture::WptCmt => set_text(Some(&mut wpt_cmt), value),
@@ -189,7 +207,7 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
                 } else if pt_depth == Some(depth) {
                     pt_depth = None;
                     if let Some(t) = current.as_mut() {
-                        push_point(&mut t.points, pt_lat, pt_lon, pt_ele, pt_time);
+                        push_point(&mut t.points, pt_lat, pt_lon, pt_ele, pt_time, pt_speed, pt_course);
                     }
                 } else if wpt_depth == Some(depth) {
                     wpt_depth = None;
@@ -212,7 +230,7 @@ pub fn parse(bytes: &[u8]) -> Result<ParsedFile> {
     if pt_depth.is_some() {
         if let Some(t) = current.as_mut() {
             if pt_time.is_some() || pt_ele.is_some() {
-                push_point(&mut t.points, pt_lat, pt_lon, pt_ele, pt_time);
+                push_point(&mut t.points, pt_lat, pt_lon, pt_ele, pt_time, pt_speed, pt_course);
             }
         }
     }
@@ -268,9 +286,17 @@ fn set_text(target: Option<&mut Option<String>>, value: &str) {
     }
 }
 
-fn push_point(points: &mut Points, lat: f64, lon: f64, ele: Option<f32>, time: Option<i64>) {
+fn push_point(
+    points: &mut Points,
+    lat: f64,
+    lon: f64,
+    ele: Option<f32>,
+    time: Option<i64>,
+    speed: Option<f32>,
+    course: Option<f32>,
+) {
     if lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0 {
-        points.push(lat, lon, ele, time);
+        points.push_recorded(lat, lon, ele, time, speed, course);
     }
 }
 
@@ -342,6 +368,25 @@ mod tests {
         assert_eq!(t.points.time[0], 1715793998000);
         assert_eq!(t.points.time[2], 1715794200000);
         assert_eq!(tracks[1].points.len(), 1);
+    }
+
+    #[test]
+    fn reads_recorded_speed_and_course_of_gpx_1_0_and_extensions() {
+        let file = parse(
+            br#"<gpx><trk><trkseg>
+              <trkpt lat="1" lon="2"><speed>0.19</speed><course>370</course>
+                <extensions><speed>0.2</speed></extensions></trkpt>
+              <trkpt lat="1" lon="2"><extensions><gpxtpx:TrackPointExtension>
+                <gpxtpx:speed>3.5</gpxtpx:speed><gpxtpx:course>90</gpxtpx:course>
+              </gpxtpx:TrackPointExtension></extensions></trkpt>
+              <trkpt lat="1" lon="2"/>
+            </trkseg></trk></gpx>"#,
+        )
+        .unwrap();
+        let p = &file.tracks[0].points;
+        assert_eq!((p.speed[0], p.course[0]), (0.19, 10.0), "the first speed wins; course wraps");
+        assert_eq!((p.speed[1], p.course[1]), (3.5, 90.0));
+        assert!(p.speed[2].is_nan() && p.course[2].is_nan());
     }
 
     #[test]

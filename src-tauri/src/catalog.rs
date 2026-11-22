@@ -62,7 +62,9 @@ CREATE TABLE IF NOT EXISTS track_data(
   importance BLOB NOT NULL,
   segs BLOB NOT NULL,
   overview BLOB NOT NULL,
-  file_segs BLOB                 -- segment starts without glitch splits; NULL in old catalogs
+  file_segs BLOB,                -- segment starts without glitch splits; NULL in old catalogs
+  speed BLOB,                    -- recorded speed (f32 m/s, NaN unknown); NULL when none recorded
+  course BLOB                    -- recorded course (f32 degrees); NULL when none recorded
 );
 CREATE TABLE IF NOT EXISTS track_matches( -- tracks of different files that are one recording
   track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
@@ -123,7 +125,7 @@ CREATE TABLE IF NOT EXISTS edit_undo_tracks( -- tracks as they were before the e
   min_lat REAL, min_lon REAL, max_lat REAL, max_lon REAL, min_ele REAL, max_ele REAL,
   edited INTEGER NOT NULL,
   coords BLOB NOT NULL, ele BLOB NOT NULL, time BLOB NOT NULL, importance BLOB NOT NULL,
-  segs BLOB NOT NULL, overview BLOB NOT NULL, file_segs BLOB,
+  segs BLOB NOT NULL, overview BLOB NOT NULL, file_segs BLOB, speed BLOB, course BLOB,
   PRIMARY KEY(undo_id, track_id)
 );
 "#;
@@ -200,7 +202,13 @@ fn migrate(conn: &Connection) -> Result<()> {
         add_column(conn, "tracks", "bundle_main", "INTEGER NOT NULL DEFAULT 0")?;
         add_column(conn, "tracks", "bundle_apart", "INTEGER NOT NULL DEFAULT 0")?;
     }
-    conn.pragma_update(None, "user_version", 5)?;
+    if version < 6 {
+        add_column(conn, "track_data", "speed", "BLOB")?;
+        add_column(conn, "track_data", "course", "BLOB")?;
+        add_column(conn, "edit_undo_tracks", "speed", "BLOB")?;
+        add_column(conn, "edit_undo_tracks", "course", "BLOB")?;
+    }
+    conn.pragma_update(None, "user_version", 6)?;
     Ok(())
 }
 
@@ -481,13 +489,18 @@ fn write_track(tx: &Transaction, track_id: i64, t: &ProcessedTrack) -> Result<()
             s.distance_m, bbox[0], bbox[1], bbox[2], bbox[3], s.min_ele, s.max_ele
         ],
     )?;
-    let b = &t.blobs;
-    tx.execute(
-        "INSERT OR REPLACE INTO track_data(track_id, coords, ele, time, importance, segs, overview, file_segs)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview, b.file_segs],
-    )?;
+    insert_track_data(tx, track_id, &t.blobs)?;
     write_places(tx, track_id, &t.places)?;
+    Ok(())
+}
+
+pub fn insert_track_data(tx: &Transaction, track_id: i64, b: &crate::process::TrackBlobs) -> Result<()> {
+    tx.execute(
+        "INSERT OR REPLACE INTO track_data(track_id, coords, ele, time, importance, segs, overview, file_segs, speed,
+           course)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![track_id, b.coords, b.ele, b.time, b.importance, b.segs, b.overview, b.file_segs, b.speed, b.course],
+    )?;
     Ok(())
 }
 
@@ -726,20 +739,35 @@ pub struct TrackData {
     pub seg_starts: Vec<u32>,
     /// The file's own segments (or as edited); the structure shown and edited.
     pub file_seg_starts: Vec<u32>,
+    /// Recorded per point, NaN where the file has none; see `Points`.
+    pub speed: Vec<f32>,
+    pub course: Vec<f32>,
 }
 
 pub fn load_track_data(conn: &Connection, track_id: i64) -> Result<TrackData> {
     Ok(conn.query_row(
-        "SELECT coords, ele, time, importance, segs, COALESCE(file_segs, segs) FROM track_data WHERE track_id = ?1",
+        "SELECT coords, ele, time, importance, segs, COALESCE(file_segs, segs), speed, course
+         FROM track_data WHERE track_id = ?1",
         [track_id],
         |r| {
+            let coords = codec::decode_coords(&r.get::<_, Vec<u8>>(0)?);
+            // Callers index these by point; a list of another length would panic under the write lock.
+            let recorded = |k: usize| -> rusqlite::Result<Vec<f32>> {
+                Ok(r.get::<_, Option<Vec<u8>>>(k)?
+                    .map(|b| codec::decode_f32(&b))
+                    .filter(|v| v.len() == coords.len())
+                    .unwrap_or_else(|| vec![f32::NAN; coords.len()]))
+            };
+            let (speed, course) = (recorded(6)?, recorded(7)?);
             Ok(TrackData {
-                coords: codec::decode_coords(&r.get::<_, Vec<u8>>(0)?),
+                coords,
                 ele: codec::decode_f32(&r.get::<_, Vec<u8>>(1)?),
                 time: codec::decode_i64(&r.get::<_, Vec<u8>>(2)?),
                 importance: codec::decode_f32(&r.get::<_, Vec<u8>>(3)?),
                 seg_starts: codec::decode_u32(&r.get::<_, Vec<u8>>(4)?),
                 file_seg_starts: codec::decode_u32(&r.get::<_, Vec<u8>>(5)?),
+                speed,
+                course,
             })
         },
     )?)

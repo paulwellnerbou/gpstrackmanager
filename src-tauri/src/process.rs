@@ -13,7 +13,7 @@ use crate::places::{self, TrackPlace};
 const OVERVIEW_ZOOM: f64 = 10.0;
 
 /// Bump when parsing or processing changes so the next scan re-reads every file.
-pub const PARSER_VERSION: i64 = 6;
+pub const PARSER_VERSION: i64 = 7;
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct Stats {
@@ -36,6 +36,15 @@ pub struct TrackBlobs {
     /// Segment starts as in the file (or as edited), without glitch splits.
     pub file_segs: Vec<u8>,
     pub overview: Vec<u8>,
+    /// Recorded speed and course; `None` when the track has no recorded value.
+    pub speed: Option<Vec<u8>>,
+    pub course: Option<Vec<u8>>,
+}
+
+/// `None` unless some value was recorded. Loggers without a speed sensor write 0 on every
+/// fix, which is no measurement either.
+pub fn recorded_blob(v: &[f32]) -> Option<Vec<u8>> {
+    v.iter().any(|x| *x != 0.0 && !x.is_nan()).then(|| codec::encode_f32(v))
 }
 
 pub struct ProcessedTrack {
@@ -248,6 +257,8 @@ pub fn process_track(mut t: ParsedTrack) -> ProcessedTrack {
         segs: codec::encode_u32(&p.seg_starts),
         file_segs: codec::encode_u32(&file_segs),
         overview,
+        speed: recorded_blob(&p.speed),
+        course: recorded_blob(&p.course),
     };
     ProcessedTrack { name: t.name, description: t.description, activity: t.activity, stats, blobs, places }
 }
@@ -266,6 +277,13 @@ mod tests {
             p.push(lat, lon, None, Some(t));
         }
         ParsedTrack { name: None, description: None, activity: None, points: p }
+    }
+
+    #[test]
+    fn speeds_that_are_all_zero_are_not_recorded() {
+        assert!(recorded_blob(&[0.0, f32::NAN, 0.0]).is_none());
+        assert!(recorded_blob(&[f32::NAN; 3]).is_none());
+        assert_eq!(recorded_blob(&[0.0, 1.5]).map(|b| codec::decode_f32(&b)), Some(vec![0.0, 1.5]));
     }
 
     #[test]
