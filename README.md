@@ -77,24 +77,31 @@ and the text you type into the place search on the map (sent to [Photon](https:/
 
 ## Installing
 
-There are no ready-made downloads yet, so you build the app yourself. It is developed and tested
-on macOS.
+The app is for macOS on Apple Silicon (M1 or newer).
 
-1. Install [Node.js](https://nodejs.org), [Rust](https://rustup.rs) and, on macOS, the Xcode
-   command line tools (`xcode-select --install`).
-2. Get the code and build the app:
-
-   ```bash
-   git clone https://github.com/paulwellnerbou/gpstrackmanager.git
-   cd gpstrackmanager
-   npm install
-   npm run tauri build
-   ```
-
-3. Move `src-tauri/target/release/bundle/macos/GPS Track Manager.app` to your Applications
-   folder and open it.
-4. Click **Add folder…** and choose the folder with your tracks. The first scan of a large
+1. Download the `.dmg` file of the
+   [latest release](https://github.com/paulwellnerbou/gpstrackmanager/releases/latest), open it
+   and drag **GPS Track Manager** to your Applications folder.
+2. Open the app. The first time, macOS refuses because the app is not notarized by Apple: click
+   **Done**, then go to **System Settings → Privacy & Security**, scroll down to the message about
+   GPS Track Manager and click **Open Anyway**. After that it opens normally.
+3. Click **Add folder…** and choose the folder with your tracks. The first scan of a large
    archive takes a while; later syncs only look at new and changed files.
+
+### Building it yourself
+
+On an Intel Mac, or to run the latest code, build the app from source. You need
+[Node.js](https://nodejs.org), [Rust](https://rustup.rs) and the Xcode command line tools
+(`xcode-select --install`).
+
+```bash
+git clone https://github.com/paulwellnerbou/gpstrackmanager.git
+cd gpstrackmanager
+npm install
+npm run tauri build
+```
+
+The app is then in `src-tauri/target/release/bundle/macos/`.
 
 ## Supported files
 
