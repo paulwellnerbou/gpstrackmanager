@@ -58,11 +58,8 @@ The app is for macOS on Apple Silicon (M1 or newer).
 1. Download the `.dmg` file of the
    [latest release](https://github.com/paulwellnerbou/gpstrackmanager/releases/latest), open it
    and drag **GPS Track Manager** to your Applications folder.
-2. Open the app. The first time, macOS refuses because the app is not notarized by Apple: click
-   **Done**, then go to **System Settings → Privacy & Security**, scroll down to the message about
-   GPS Track Manager and click **Open Anyway**. After that it opens normally.
-3. Click **Add folder…** and choose the folder with your tracks. The first scan of a large
-   archive takes a while; later syncs only look at new and changed files.
+2. Open the app, click **Add folder…** and choose the folder with your tracks. The first scan of
+   a large archive takes a while; later syncs only look at new and changed files.
 
 ### Building it yourself
 
