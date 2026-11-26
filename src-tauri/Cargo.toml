@@ -1,7 +1,7 @@
 [package]
 name = "gpstrackmanager"
 version = "1.0.0"
-description = "Lightroom-style GPS track manager"
+description = "Library and editor for GPS track archives"
 authors = ["Paul Wellner Bou"]
 license = "MIT"
 edition = "2024"

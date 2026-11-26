@@ -1,8 +1,8 @@
 # GPS Track Manager
 
 A desktop app for people with years of GPS tracks lying around in folders. Point it at those
-folders and it builds a searchable library of every track, Lightroom style: your files stay where
-they are, and nothing in them changes unless you ask for it.
+folders and it builds a searchable library of every track. Your files stay where they are, and
+nothing in them changes unless you ask for it.
 
 ![A day trip around Ao Nang and Krabi, Thailand: track on the map with distance, speed and altitude markers, the elevation profile below, and the track's details and points on the right](docs/screenshot.png)
 

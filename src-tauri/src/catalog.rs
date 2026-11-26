@@ -585,7 +585,7 @@ pub fn list_file_waypoints(conn: &Connection, file_id: i64) -> Result<Vec<Waypoi
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Flags catalogued files that were not found on disk, like Lightroom's "missing" state.
+/// Flags catalogued files that were not found on disk; they stay in the catalog as missing.
 pub fn update_missing(conn: &mut Connection, root_id: i64, seen: &[String]) -> Result<usize> {
     let tx = write_tx(conn)?;
     tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS seen(path TEXT PRIMARY KEY); DELETE FROM seen;")?;
