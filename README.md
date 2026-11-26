@@ -8,53 +8,20 @@ nothing in them changes unless you ask for it.
 
 ## What you can do
 
-**Browse your whole archive**
-
-- Add one or more folders as your library. The app finds every track file in them (GPX, FIT,
-  KML, NMEA and more, see [Supported files](#supported-files)), also files with several tracks or
-  hundreds of thousands of points, and keeps up with new and changed files when you press **Sync**.
-- See every track of the list on one map (a search narrows the map down too), or turn off
-  **All tracks** to see only the selected one. Click a line on the map to select its track.
-- Stays fast with big archives: thousands of tracks and millions of points show on the map at
-  once and still pan and zoom smoothly.
-- Search by place, country, title, description, tag, activity or file name. Every track knows
-  where it starts and ends and which towns it passes, so "Krabi" or "Thailand" just works, even
-  for tracks without a name.
-- Turn off **Base map** to see the tracks alone, or pick a light, dark or black map theme.
-
-**Look at one track**
-
-- The map zooms to the selected track. **Markers** adds start and end flags, distance markers,
-  waypoints and laps, with labels for distance, speed, altitude and time. The line can be coloured
-  by speed or altitude, or drawn as points.
-- Below the map, the elevation profile follows your mouse: hover over it and a marker moves along
-  the track.
-- On the right you find duration, distance, elevation range, start, end and the places passed,
-  and every single point with its time, elevation and position.
-- Give tracks a title, a description, tags and an activity (walking, hiking, bike, car, train,
-  boat, aeroplane, …).
-- Open the track in **Google Earth**, its area in **Maps**, or its file in Finder.
-- Jump anywhere on the map with the search field on it: type a place or `lat, lon`.
-
-**Fix and edit tracks**
-
-- Select points in the point list (click, Shift-click, ⌘-click, ⌘A), or on the map when the
-  track is drawn as points, then delete them with ⌫ or the right-click menu. The same menu splits
-  a track at a point.
-- Right-click a segment to delete it, join it with the next one, or make it a track of its own.
-- **Clean up…** removes typical logger junk in one go: the scatter while the logger lay still
-  (left on indoors, for example), points at latitude or longitude 0, and spikes more than 100 km
-  off the track.
-- GPS glitches and recording gaps never show up as straight lines across the map and do not
-  count as distance.
-- ⌘Z undoes the last edit. **Revert to file** throws away all point edits and split-off parts
-  of a file.
-
-**Import from GPS devices**
-
-- Connect your GPS (for example a Garmin) and press **Check for GPS device**. The app lists the
-  track files on it, marks the ones you already have, and copies the new ones into your library,
-  sorted by year. The device itself is never changed.
+- 📂 **Your whole archive in one library**: GPX, FIT, KML, NMEA and more
+  ([Supported files](#supported-files)), straight from your folders. **Sync** picks up new and
+  changed files.
+- ⚡ **All tracks on one map at once**, still fast with thousands of tracks and millions of points.
+- 🔎 **Search by place**: every track knows the towns it passes, so "Krabi" or "Thailand" finds it,
+  even without a name.
+- 📈 **Track details**: elevation profile, distance and speed markers, colouring by speed or
+  altitude, and every single point.
+- 🏷️ **Organise** with titles, descriptions, tags and activities.
+- ✂️ **Edit**: delete points, split and join segments, undo with ⌘Z.
+- 🧹 **Clean up** logger junk in one go: indoor scatter, 0/0 points, far-off spikes.
+- 🔌 **Import from your GPS** (e.g. Garmin): new files are copied into your library, the device
+  stays untouched.
+- 🌍 **Open in Google Earth or Maps**, light, dark or black map themes.
 
 ## Your files are safe
 
