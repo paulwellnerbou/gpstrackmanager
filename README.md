@@ -69,6 +69,15 @@ A file in any other format (FIT, KML, NMEA, …) is written as a new `.gpx` next
 written file holds what you see in the app; anything the import skipped (such as sensor data)
 stays in the backup.
 
+## Where your data is stored
+
+Titles, tags, edits and a fast copy of all points live in the app's own database:
+`~/Library/Application Support/de.wellnerbou.gpstrackmanager/catalog.sqlite`. That keeps the map
+fast and your files untouched. Back it up along with your tracks.
+
+The catalog is not updated automatically: files you add or change outside the app show up after
+you press **Sync**. Adding a folder and importing from a GPS device update it right away.
+
 ## Privacy
 
 Your location history stays on your computer. Place names are looked up offline, from a list of
